@@ -9,7 +9,10 @@ Formato de una máquina (analizado a partir de los zips oficiales):
 Este módulo reproduce lo que hace `auto_deploy.sh` pero:
 
 * sin depender de bash (funciona en Windows / macOS / Linux),
-* sin `sudo` (si el socket no es accesible, se informa y se sugiere la solución),
+* sin `sudo` obligatorio: si el socket no es accesible y la app no corre como
+  root, se detecta y se ofrece elevar privilegios con el diálogo nativo del
+  escritorio (pkexec/polkit, o `sudo -A` con askpass gráfico) para conceder
+  acceso al usuario (grupo `docker` + ACL inmediata sobre el socket),
 * con soporte de publicación de puertos: en Docker Desktop (Windows/macOS) la IP
   del bridge NO es alcanzable desde el host, así que publicamos los
   `ExposedPorts` de la imagen en `127.0.0.1`.
@@ -87,6 +90,17 @@ class DockerInfo:
     is_desktop: bool = False          # Docker Desktop (Win/mac/Linux)
     is_wsl: bool = False              # cliente corriendo dentro de WSL
     error: str = ""
+    # --- permisos (Linux) ---
+    permission_denied: bool = False   # el socket existe pero el usuario no puede usarlo
+    is_root: bool = False             # la app se ejecuta como root (sudo)
+    socket_path: str = ""             # ruta del socket unix (si aplica)
+    can_elevate: bool = False         # hay un mecanismo gráfico para pedir privilegios
+    service_state: str = ""           # systemd: active | inactive | failed | missing | ''
+
+    @property
+    def needs_elevation(self) -> bool:
+        """True si Docker está instalado pero falta permiso y no somos root."""
+        return self.available and self.permission_denied and not self.is_root
 
     @property
     def bridge_ip_reachable(self) -> bool:
@@ -306,6 +320,232 @@ def inspect_image_tar(tar_path: Path) -> ImageInfo:
 
 
 # =====================================================================
+# Permisos y elevación de privilegios (Linux)
+# =====================================================================
+
+def is_root() -> bool:
+    """True si el proceso corre como root/administrador."""
+    geteuid = getattr(os, "geteuid", None)
+    if geteuid is not None:
+        return geteuid() == 0
+    if os.name == "nt":  # pragma: no cover - solo Windows
+        try:
+            import ctypes
+            return bool(ctypes.windll.shell32.IsUserAnAdmin())
+        except Exception:  # noqa: BLE001
+            return False
+    return False
+
+
+def docker_socket_path(client: Optional["DockerClient"] = None) -> str:
+    """Ruta del socket unix que usa el cliente (DOCKER_HOST, contexto o por defecto)."""
+    host = os.environ.get("DOCKER_HOST", "")
+    if host.startswith("unix://"):
+        return host[len("unix://"):]
+    if host:
+        return ""  # tcp://, ssh://, npipe… → no aplica el chequeo de socket
+    # Docker Desktop / rootless suelen usar un contexto con otro socket
+    if client is not None and client.binary:
+        try:
+            out = client._run([client.binary, "context", "inspect", "--format",
+                               "{{.Endpoints.docker.Host}}"], timeout=5)
+            ep = (out.stdout or b"").decode("utf-8", "replace").strip()
+            if ep.startswith("unix://"):
+                return ep[len("unix://"):]
+            if ep:
+                return ""
+        except Exception:  # noqa: BLE001
+            pass
+    xdg = os.environ.get("XDG_RUNTIME_DIR", "")
+    if xdg and Path(xdg, "docker.sock").exists():   # rootless docker
+        return str(Path(xdg, "docker.sock"))
+    return "/var/run/docker.sock"
+
+
+def socket_access(sock: str) -> str:
+    """'ok' | 'denied' | 'missing'."""
+    if not sock:
+        return "ok"
+    try:
+        st = os.stat(sock)
+    except FileNotFoundError:
+        return "missing"
+    except OSError:
+        return "denied"
+    import stat as _stat
+    if not _stat.S_ISSOCK(st.st_mode):
+        return "missing"
+    return "ok" if os.access(sock, os.R_OK | os.W_OK) else "denied"
+
+
+def docker_service_state() -> str:
+    """Estado del servicio systemd `docker` ('' si no hay systemd)."""
+    systemctl = shutil.which("systemctl")
+    if not systemctl:
+        return ""
+    try:
+        cp = subprocess.run([systemctl, "is-active", "docker"], capture_output=True,
+                            timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    out = (cp.stdout or b"").decode("utf-8", "replace").strip()
+    if out in ("active", "inactive", "failed", "activating", "deactivating"):
+        return out
+    return "missing" if "could not be found" in (cp.stderr or b"").decode("utf-8", "replace") \
+        else (out or "")
+
+
+def _askpass_helper() -> str:
+    """Programa gráfico para `sudo -A`, si existe."""
+    for cand in (os.environ.get("SUDO_ASKPASS", ""), "/usr/lib/ssh/ssh-askpass",
+                 "/usr/libexec/openssh/ssh-askpass",
+                 "/usr/lib/openssh/gnome-ssh-askpass",
+                 "/usr/bin/ssh-askpass", "/usr/bin/ksshaskpass",
+                 "/usr/bin/lxqt-openssh-askpass", "/usr/bin/x11-ssh-askpass"):
+        if cand and os.path.isfile(cand) and os.access(cand, os.X_OK):
+            return cand
+    which = shutil.which("ssh-askpass") or shutil.which("ksshaskpass")
+    return which or ""
+
+
+def elevation_command() -> List[str]:
+    """Prefijo de comando para ejecutar algo como root con diálogo gráfico nativo.
+
+    Orden de preferencia (Linux):
+      1. pkexec (polkit → diálogo del escritorio: GNOME/KDE/XFCE…)
+      2. sudo -A con un askpass gráfico (ssh-askpass, ksshaskpass…)
+      3. lxqt-sudo / kdesu / gksudo (entornos concretos)
+    Devuelve [] si no hay ninguno (o no estamos en Linux).
+    """
+    if platform.system() != "Linux":
+        return []
+    if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        return []
+    pk = shutil.which("pkexec")
+    if pk:
+        return [pk]
+    sudo = shutil.which("sudo")
+    if sudo and _askpass_helper():
+        return [sudo, "-A"]
+    for alt in ("lxqt-sudo", "kdesu", "gksudo", "gksu"):
+        w = shutil.which(alt)
+        if w:
+            return [w] if alt != "kdesu" else [w, "-c"]
+    return []
+
+
+def elevation_available() -> bool:
+    return bool(elevation_command())
+
+
+GRANT_ACCESS_SCRIPT = r"""
+set -e
+USER_NAME="$1"
+SOCK="$2"
+# 1) grupo docker (persistente, requiere re-login para nuevos procesos)
+if ! getent group docker >/dev/null 2>&1; then
+  groupadd docker
+fi
+usermod -aG docker "$USER_NAME"
+# 2) arrancar el servicio si está parado
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl is-active --quiet docker || systemctl start docker || true
+  systemctl enable docker >/dev/null 2>&1 || true
+elif command -v service >/dev/null 2>&1; then
+  service docker start >/dev/null 2>&1 || true
+fi
+# 3) acceso inmediato sin re-login: ACL sobre el socket (o chmod si no hay setfacl)
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  [ -S "$SOCK" ] && break
+  sleep 1
+done
+if [ -S "$SOCK" ]; then
+  if command -v setfacl >/dev/null 2>&1; then
+    setfacl -m "u:${USER_NAME}:rw" "$SOCK"
+  else
+    chgrp docker "$SOCK" 2>/dev/null || true
+    chmod g+rw "$SOCK" 2>/dev/null || true
+  fi
+fi
+echo GRANT_OK
+"""
+
+
+def grant_docker_access(sock: str = "", user: str = "",
+                        runner: Optional[Callable[..., subprocess.CompletedProcess]] = None,
+                        timeout: float = 180) -> Tuple[bool, str]:
+    """Pide privilegios con el diálogo nativo y concede acceso al socket.
+
+    Añade al usuario al grupo `docker`, arranca el servicio y aplica una ACL
+    sobre el socket para que funcione *sin cerrar sesión*. Devuelve (ok, detalle).
+    """
+    if platform.system() != "Linux":
+        return False, "La elevación de privilegios solo está soportada en Linux."
+    prefix = elevation_command()
+    if not prefix:
+        return False, ("No se encontró pkexec ni sudo con askpass gráfico.\n"
+                       "Ejecuta a mano: sudo usermod -aG docker $USER  (y reinicia sesión).")
+    user = user or os.environ.get("SUDO_USER") or os.environ.get("USER") or ""
+    if not user:
+        try:
+            import pwd
+            user = pwd.getpwuid(os.getuid()).pw_name
+        except Exception:  # noqa: BLE001
+            return False, "No se pudo determinar el usuario actual."
+    sock = sock or docker_socket_path() or "/var/run/docker.sock"
+    cmd = [*prefix, "/bin/sh", "-c", GRANT_ACCESS_SCRIPT, "dockerlabs-grant", user, sock]
+    env = dict(os.environ)
+    if prefix and prefix[0].endswith("sudo") and not env.get("SUDO_ASKPASS"):
+        env["SUDO_ASKPASS"] = _askpass_helper()
+    run = runner or (lambda c, timeout=timeout, input_data=None: subprocess.run(
+        list(c), capture_output=True, timeout=timeout, env=env))
+    try:
+        cp = run(cmd, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return False, "Se agotó el tiempo esperando la autorización."
+    except OSError as exc:
+        return False, f"No se pudo lanzar el diálogo de autorización: {exc}"
+    out = (cp.stdout or b"").decode("utf-8", "replace")
+    err = (cp.stderr or b"").decode("utf-8", "replace")
+    if cp.returncode == 126 or "dismissed" in err.lower() or "not authorized" in err.lower():
+        return False, "Autorización cancelada por el usuario."
+    if cp.returncode != 0 or "GRANT_OK" not in out:
+        return False, (err.strip() or out.strip() or f"Fallo al conceder acceso (rc={cp.returncode}).")[:800]
+    return True, ("Acceso concedido. Tu usuario ya pertenece al grupo docker; "
+                  "el acceso inmediato es válido hasta que se reinicie el servicio "
+                  "(tras cerrar e iniciar sesión será permanente).")
+
+
+def start_docker_service(runner: Optional[Callable[..., subprocess.CompletedProcess]] = None,
+                         timeout: float = 120) -> Tuple[bool, str]:
+    """Arranca el servicio docker (systemd) pidiendo privilegios con diálogo nativo."""
+    if platform.system() != "Linux":
+        return False, "Arranca Docker Desktop desde el sistema."
+    prefix = [] if is_root() else elevation_command()
+    if not prefix and not is_root():
+        return False, "No hay forma gráfica de pedir privilegios (instala policykit-1 / pkexec)."
+    systemctl = shutil.which("systemctl")
+    if systemctl:
+        cmd = [*prefix, systemctl, "start", "docker"]
+    elif shutil.which("service"):
+        cmd = [*prefix, shutil.which("service"), "docker", "start"]
+    else:
+        return False, "No se encontró systemctl ni service."
+    run = runner or (lambda c, timeout=timeout, input_data=None: subprocess.run(
+        list(c), capture_output=True, timeout=timeout))
+    try:
+        cp = run(cmd, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, str(exc)
+    if cp.returncode != 0:
+        err = (cp.stderr or b"").decode("utf-8", "replace").strip()
+        if cp.returncode == 126 or "dismissed" in err.lower():
+            return False, "Autorización cancelada por el usuario."
+        return False, err[:800] or f"rc={cp.returncode}"
+    return True, "Servicio docker iniciado."
+
+
+# =====================================================================
 # Cliente Docker (CLI)
 # =====================================================================
 
@@ -346,12 +586,12 @@ class DockerClient:
     @staticmethod
     def _raise_for_stderr(err: str, args: Sequence[str]) -> None:
         low = err.lower()
-        if "permission denied" in low and ("docker.sock" in low or "socket" in low):
+        if "permission denied" in low and ("docker.sock" in low or "socket" in low
+                                          or "dial unix" in low):
             raise DockerPermissionDenied(
                 "Sin permiso para hablar con el daemon de Docker.\n"
-                "Añade tu usuario al grupo docker y vuelve a iniciar sesión:\n"
-                "    sudo usermod -aG docker $USER\n"
-                "(o ejecuta la app con permisos de administrador)."
+                "Pulsa «Conceder acceso» para autorizarlo con tu contraseña, o hazlo a mano:\n"
+                "    sudo usermod -aG docker $USER   # y vuelve a iniciar sesión"
             )
         if ("cannot connect to the docker daemon" in low
                 or "is the docker daemon running" in low
@@ -368,20 +608,36 @@ class DockerClient:
     # ---------- detección ----------
 
     def info(self) -> DockerInfo:
+        root = is_root()
         if not self.binary:
-            return DockerInfo(available=False, running=False,
+            return DockerInfo(available=False, running=False, is_root=root,
                               error="Docker no está instalado o no está en el PATH.")
+        sock = docker_socket_path(self) if platform.system() == "Linux" else ""
+        base = dict(available=True, running=False, is_root=root, socket_path=sock,
+                    can_elevate=elevation_available(),
+                    service_state=docker_service_state() if sock else "")
+        # Pre-chequeo barato: si el socket existe y no podemos ni leerlo, no hace
+        # falta llamar a docker (y en algunas distros `docker version` tarda).
+        if sock and socket_access(sock) == "denied":
+            return DockerInfo(
+                permission_denied=True,
+                error=("Sin permiso para usar el socket de Docker "
+                       f"({sock}). " + ("Pulsa «Conceder acceso» para autorizarlo."
+                                        if base["can_elevate"] else
+                                        "Ejecuta: sudo usermod -aG docker $USER y vuelve a iniciar sesión.")),
+                **base,
+            )
         try:
             raw = self._docker("version", "--format", "{{json .}}", timeout=15)
             data = json.loads(raw or "{}")
-        except DockerNotRunning as exc:
-            return DockerInfo(available=True, running=False, error=str(exc))
         except DockerPermissionDenied as exc:
-            return DockerInfo(available=True, running=False, error=str(exc))
+            return DockerInfo(permission_denied=True, error=str(exc), **base)
+        except DockerNotRunning as exc:
+            return DockerInfo(error=str(exc), **base)
         except (LabError, json.JSONDecodeError) as exc:
             # `docker version` devuelve rc!=0 si el server no responde pero
             # sigue imprimiendo el JSON del cliente.
-            return DockerInfo(available=True, running=False, error=str(exc))
+            return DockerInfo(error=str(exc), **base)
         server = data.get("Server") or {}
         client = data.get("Client") or {}
         platform_name = ((server.get("Platform") or {}).get("Name")
@@ -395,15 +651,15 @@ class DockerClient:
             except LabError:
                 pass
         is_wsl = "microsoft" in platform.uname().release.lower()
+        base["running"] = bool(server)
         return DockerInfo(
-            available=True,
-            running=bool(server),
             version=server.get("Version") or client.get("Version") or "",
             server_os=server.get("Os", ""),
             server_arch=server.get("Arch", ""),
             is_desktop=is_desktop,
             is_wsl=is_wsl,
             error="" if server else "El daemon no respondió.",
+            **base,
         )
 
     # ---------- imágenes ----------
@@ -561,7 +817,22 @@ def install_hint() -> str:
     return ("Instala Docker Engine, p.ej. en Debian/Ubuntu/Kali:\n"
             "    sudo apt update && sudo apt install -y docker.io\n"
             "    sudo systemctl enable --now docker\n"
-            "    sudo usermod -aG docker $USER   # y vuelve a iniciar sesión")
+            "Después, la app te pedirá permiso (diálogo del sistema) para "
+            "usar Docker sin sudo.")
+
+
+def permission_hint(info: "DockerInfo") -> str:
+    """Explicación corta del problema de permisos y cómo resolverlo."""
+    if info.is_root:
+        return "La app se ejecuta como root: no hace falta conceder permisos."
+    if info.can_elevate:
+        return ("Tu usuario no puede usar Docker sin sudo. Pulsa «Conceder acceso»: "
+                "se abrirá el diálogo de autenticación del sistema y se añadirá tu "
+                "usuario al grupo docker (sin necesidad de reiniciar la app).")
+    return ("Tu usuario no puede usar Docker sin sudo y no se encontró pkexec "
+            "(polkit) ni un askpass gráfico. Ejecuta en una terminal:\n"
+            "    sudo usermod -aG docker $USER\n"
+            "y vuelve a iniciar sesión, o instala policykit-1.")
 
 
 def choose_network_strategy(info: DockerInfo, preferred: str = "auto") -> str:
