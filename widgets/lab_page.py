@@ -187,10 +187,13 @@ class LabPage(QWidget):
     request_action = pyqtSignal(str, str)   # machine, action
     request_refresh = pyqtSignal()
     request_go_machines = pyqtSignal()
+    request_grant_access = pyqtSignal()     # Linux: pedir sudo con diálogo nativo
+    request_start_service = pyqtSignal()    # Linux: systemctl start docker (elevado)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._widgets: Dict[str, LabItemWidget] = {}
+        self._elevating = False
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -224,9 +227,22 @@ class LabPage(QWidget):
         txt.addWidget(self.lbl_docker_title)
         txt.addWidget(self.lbl_docker_sub)
         dl.addLayout(txt, 1)
+        btns = QVBoxLayout()
+        btns.setSpacing(6)
+        self.btn_grant = _btn("Conceder acceso", "shield", "#0b1316", "primary")
+        self.btn_grant.setToolTip(
+            "Se abrirá el diálogo de autenticación del sistema (pkexec/sudo) para añadir tu "
+            "usuario al grupo docker y dar acceso inmediato al socket.")
+        self.btn_grant.clicked.connect(self.request_grant_access.emit)
+        self.btn_start_service = _btn("Iniciar servicio", "power", "#0b1316", "primary")
+        self.btn_start_service.setToolTip("Arranca el servicio docker (pide permisos de administrador).")
+        self.btn_start_service.clicked.connect(self.request_start_service.emit)
         self.btn_refresh = _btn("Actualizar", "refresh", FG_PRIMARY)
         self.btn_refresh.clicked.connect(self.request_refresh.emit)
-        dl.addWidget(self.btn_refresh, 0, Qt.AlignmentFlag.AlignTop)
+        for b in (self.btn_grant, self.btn_start_service, self.btn_refresh):
+            btns.addWidget(b)
+        btns.addStretch(1)
+        dl.addLayout(btns, 0)
         body.addWidget(self.docker_card)
 
         self.lbl_summary = QLabel("Sin máquinas desplegadas")
@@ -276,7 +292,21 @@ class LabPage(QWidget):
 
     # ---- API ----
 
-    def set_docker_info(self, info, install_hint: str) -> None:
+    def set_elevating(self, active: bool) -> None:
+        """Mientras el diálogo del sistema está abierto, bloquear los botones."""
+        self._elevating = active
+        self.btn_grant.setEnabled(not active)
+        self.btn_start_service.setEnabled(not active)
+        self.btn_refresh.setEnabled(not active)
+        if active:
+            self.lbl_docker_title.setText("Esperando autorización del sistema…")
+            self.lbl_docker_sub.setText(
+                "Introduce tu contraseña en el diálogo que acaba de abrirse.")
+            self.lbl_docker_sub.setStyleSheet(f"color: {FG_MUTED}; font-size: 11px;")
+
+    def set_docker_info(self, info, install_hint: str, permission_hint: str = "") -> None:
+        self.btn_grant.setVisible(False)
+        self.btn_start_service.setVisible(False)
         if info is None:
             self.docker_icon.setPixmap(svg_icon("docker", FG_MUTED, 28).pixmap(28, 28))
             self.lbl_docker_title.setText("Comprobando Docker…")
@@ -287,16 +317,28 @@ class LabPage(QWidget):
             self.lbl_docker_title.setText("Docker no está instalado")
             self.lbl_docker_sub.setText(install_hint)
             self.lbl_docker_sub.setStyleSheet(f"color: {WARNING}; font-size: 11px;")
+        elif getattr(info, "needs_elevation", False):
+            self.docker_icon.setPixmap(svg_icon("lock", WARNING, 28).pixmap(28, 28))
+            self.lbl_docker_title.setText("Docker instalado, pero tu usuario no tiene permiso")
+            self.lbl_docker_sub.setText(permission_hint or info.error)
+            self.lbl_docker_sub.setStyleSheet(f"color: {WARNING}; font-size: 11px;")
+            self.btn_grant.setVisible(bool(getattr(info, "can_elevate", False)))
         elif not info.running:
             self.docker_icon.setPixmap(svg_icon("docker", WARNING, 28).pixmap(28, 28))
             self.lbl_docker_title.setText("Docker instalado, pero el daemon no responde")
             self.lbl_docker_sub.setText(info.error)
             self.lbl_docker_sub.setStyleSheet(f"color: {WARNING}; font-size: 11px;")
+            state = getattr(info, "service_state", "")
+            # Servicio parado en Linux con systemd → ofrecer arrancarlo con elevación
+            if state in ("inactive", "failed") and (
+                    getattr(info, "can_elevate", False) or getattr(info, "is_root", False)):
+                self.btn_start_service.setVisible(True)
         else:
             self.docker_icon.setPixmap(svg_icon("docker", SUCCESS, 28).pixmap(28, 28))
             kind = "Docker Desktop" if info.is_desktop else "Docker Engine"
             wsl = " (WSL2)" if info.is_wsl else ""
-            self.lbl_docker_title.setText(f"{kind} {info.version}{wsl} · listo")
+            root = " · root" if getattr(info, "is_root", False) else ""
+            self.lbl_docker_title.setText(f"{kind} {info.version}{wsl}{root} · listo")
             if info.bridge_ip_reachable:
                 net = "Red: bridge — la IP del contenedor es accesible directamente (como auto_deploy.sh)."
             else:

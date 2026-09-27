@@ -26,10 +26,13 @@ from lab_manager import (
     container_name_for,
     describe_access,
     extract_lab,
+    grant_docker_access,
     inspect_image_tar,
     install_hint,
+    permission_hint,
     plan_port_mappings,
     slug_from_name,
+    start_docker_service,
 )
 
 logger = logging.getLogger(__name__)
@@ -75,6 +78,29 @@ class _DockerInfoWorker(QThread):
         except Exception as exc:  # noqa: BLE001
             logger.exception("docker info")
             self.done.emit(DockerInfo(available=False, running=False, error=str(exc)))
+
+
+class _ElevateWorker(QThread):
+    """Pide privilegios (diálogo nativo) para conceder acceso o arrancar el servicio."""
+    done = pyqtSignal(str, bool, str)   # action, ok, detail
+
+    def __init__(self, action: str, socket_path: str = "", parent=None) -> None:
+        super().__init__(parent)
+        self.action = action
+        self.socket_path = socket_path
+
+    def run(self) -> None:
+        try:
+            if self.action == "grant":
+                ok, msg = grant_docker_access(sock=self.socket_path)
+            elif self.action == "start_service":
+                ok, msg = start_docker_service()
+            else:
+                ok, msg = False, f"Acción desconocida: {self.action}"
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("elevate %s", self.action)
+            ok, msg = False, str(exc)
+        self.done.emit(self.action, ok, msg)
 
 
 class _RefreshWorker(QThread):
@@ -204,6 +230,8 @@ class LabController(QObject):
     lab_started = pyqtSignal(str, str)            # machine, access_text
     lab_failed = pyqtSignal(str, str)             # machine, error
     lab_action_done = pyqtSignal(str, str)        # machine, action
+    elevation_started = pyqtSignal(str)           # action
+    elevation_done = pyqtSignal(str, bool, str)   # action, ok, detail
 
     def __init__(self, labs_dir: Path, network_preference: str = "auto",
                  parent: Optional[QObject] = None) -> None:
@@ -234,6 +262,13 @@ class LabController(QObject):
     def install_hint() -> str:
         return install_hint()
 
+    def permission_hint(self) -> str:
+        return permission_hint(self.docker_info)
+
+    @property
+    def elevating(self) -> bool:
+        return any(isinstance(w, _ElevateWorker) and w.isRunning() for w in self._workers)
+
     # ---------- configuración ----------
 
     def set_network_preference(self, pref: str) -> None:
@@ -249,6 +284,29 @@ class LabController(QObject):
         w = _DockerInfoWorker(self.client, parent=self)
         w.done.connect(self._on_docker_info)
         self._track(w)
+
+    def grant_access(self) -> bool:
+        """Linux: pide la contraseña con el diálogo del sistema y añade el usuario
+        al grupo docker (+ ACL inmediata sobre el socket). No bloquea la UI."""
+        return self._elevate("grant")
+
+    def start_service(self) -> bool:
+        """Linux: `systemctl start docker` con elevación gráfica."""
+        return self._elevate("start_service")
+
+    def _elevate(self, action: str) -> bool:
+        if self.elevating:
+            return False
+        w = _ElevateWorker(action, self.docker_info.socket_path, parent=self)
+        w.done.connect(self._on_elevation_done)
+        self.elevation_started.emit(action)
+        self._track(w)
+        return True
+
+    def _on_elevation_done(self, action: str, ok: bool, detail: str) -> None:
+        self.elevation_done.emit(action, ok, detail)
+        # Re-evaluar el estado de Docker en cualquier caso
+        self.refresh_docker_info()
 
     def refresh_containers(self) -> None:
         if not self.client.binary:

@@ -271,6 +271,8 @@ class DashboardPage(QWidget):
             return
         if not info.available:
             sub.setText("Docker no instalado")
+        elif getattr(info, "needs_elevation", False):
+            sub.setText("Docker: falta permiso (ver Laboratorio)")
         elif not info.running:
             sub.setText("Docker no responde")
         else:

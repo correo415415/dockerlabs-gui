@@ -271,6 +271,8 @@ class MainWindow(QMainWindow):
         self.labs.lab_started.connect(self._on_lab_started)
         self.labs.lab_failed.connect(self._on_lab_failed)
         self.labs.lab_action_done.connect(self._on_lab_action_done)
+        self.labs.elevation_started.connect(self._on_elevation_started)
+        self.labs.elevation_done.connect(self._on_elevation_done)
 
         # páginas
         self.page_dashboard = DashboardPage()
@@ -307,6 +309,8 @@ class MainWindow(QMainWindow):
         self.page_lab.request_action.connect(self._lab_action)
         self.page_lab.request_refresh.connect(self._refresh_docker)
         self.page_lab.request_go_machines.connect(lambda: self._go("machines"))
+        self.page_lab.request_grant_access.connect(self._grant_docker_access)
+        self.page_lab.request_start_service.connect(self._start_docker_service)
         self.page_settings.request_set_docker_network.connect(self._set_docker_network)
         self.page_session.request_login.connect(self._do_login)
         self.page_session.request_logout.connect(self._do_logout)
@@ -909,8 +913,36 @@ class MainWindow(QMainWindow):
         self.labs.refresh_docker_info()
 
     def _on_docker_info(self, info) -> None:
-        self.page_lab.set_docker_info(info, self.labs.install_hint())
+        self.page_lab.set_docker_info(info, self.labs.install_hint(),
+                                      self.labs.permission_hint())
         self.page_dashboard.set_docker(info)
+
+    # ---- Permisos de Docker (Linux: pkexec / sudo -A) ----
+
+    def _grant_docker_access(self) -> None:
+        info = self.labs.docker_info
+        if not info.needs_elevation:
+            self.notify("No hace falta", "Tu usuario ya puede usar Docker.", kind="info")
+            return
+        if not self.labs.grant_access():
+            self.notify("Ya hay una autorización en curso", kind="info")
+
+    def _start_docker_service(self) -> None:
+        if not self.labs.start_service():
+            self.notify("Ya hay una autorización en curso", kind="info")
+
+    def _on_elevation_started(self, action: str) -> None:
+        self.page_lab.set_elevating(True)
+
+    def _on_elevation_done(self, action: str, ok: bool, detail: str) -> None:
+        self.page_lab.set_elevating(False)
+        titles = {"grant": "Acceso a Docker", "start_service": "Servicio Docker"}
+        title = titles.get(action, action)
+        if ok:
+            self.notify(title, detail.splitlines()[0] if detail else "Hecho", kind="success")
+        else:
+            self.notify(f"{title}: no se pudo", detail.splitlines()[0] if detail else "",
+                        kind="warning" if "cancelad" in detail.lower() else "error")
 
     def _on_labs_list(self) -> None:
         labs = self.labs.all_labs()
@@ -929,6 +961,23 @@ class MainWindow(QMainWindow):
             self.notify("Docker no está instalado", self.labs.install_hint().splitlines()[0],
                         kind="error")
             self._go("lab")
+            return
+        if info.needs_elevation:
+            self._go("lab")
+            if info.can_elevate:
+                res = QMessageBox.question(
+                    self, "Permiso para usar Docker",
+                    "Tu usuario no puede usar Docker sin sudo.\n\n"
+                    "¿Conceder acceso ahora? Se abrirá el diálogo de autenticación del sistema "
+                    "y se añadirá tu usuario al grupo docker.",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                )
+                if res == QMessageBox.StandardButton.Yes:
+                    self._grant_docker_access()
+            else:
+                self.notify("Sin permiso para usar Docker",
+                            "Ejecuta: sudo usermod -aG docker $USER (y reinicia sesión)",
+                            kind="error")
             return
         if not info.running:
             self.notify("Docker no responde", (info.error or "").splitlines()[0], kind="error")
