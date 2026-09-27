@@ -5,7 +5,7 @@ Cambios v0.5:
 - Notificaciones del SO opcionales (winotify/notify-send/osascript/plyer).
 - Página Ajustes funcional: cambiar carpeta de descargas + toggles.
 - Combos de filtros disimulados.
-- Descargador MEGA paralelo (Range requests concurrentes).
+- Descargas HTTP directas desde gestion-maquinas.dockerlabs.es (con reintentos).
 """
 from __future__ import annotations
 
@@ -249,11 +249,13 @@ class MainWindow(QMainWindow):
         h.addWidget(self.stack, 1)
 
         # download manager
-        self.downloads = DownloadManager(Path(self.settings.downloads_dir), parent=self)
+        self.downloads = DownloadManager(Path(self.settings.downloads_dir),
+                                         max_concurrent=self.settings.max_concurrent_downloads,
+                                         parent=self)
         self.downloads.state_changed.connect(self._on_dm_state)
         self.downloads.list_changed.connect(self._on_dm_list)
         self.downloads.download_completed.connect(self._on_dm_completed)
-        self.downloads.quota_exceeded.connect(self._on_dm_quota)
+        self.downloads.download_failed.connect(self._on_dm_failed)
 
         # páginas
         self.page_dashboard = DashboardPage()
@@ -655,7 +657,7 @@ class MainWindow(QMainWindow):
     def _start_download(self, name: str, url: str) -> None:
         if not url:
             self.notify("Sin enlace de descarga",
-                        f"{name} no tiene enlace MEGA en el catálogo.", kind="warning")
+                        f"{name} no tiene enlace de descarga en el catálogo.", kind="warning")
             return
         # Si ya esta en disco, no relanzar la descarga: abrir la carpeta.
         existing = self.downloads.downloaded_paths().get(name)
@@ -829,38 +831,18 @@ class MainWindow(QMainWindow):
         )
         self._refresh_downloaded_state()
 
-    def _on_dm_quota(self, machine: str, error_msg: str) -> None:
-        """MEGA ha bloqueado la descarga por límite de ancho de banda.
-
-        Detectado por uno de estos síntomas (ver mega_downloader.py):
-          * HTTP 509 (Bandwidth Limit Exceeded)
-          * HTTP 403/429/503 con cuerpo JSON que contiene códigos -17/-6/-19/-4
-          * Payload JSON corto {'e': -17} antes de los datos cifrados
-          * Respuesta del endpoint /cs con `e` o lista con primer entero negativo
-            en MEGA_QUOTA_CODES (-4 ERATELIMIT, -6 ETOOMANY, -17 EOVERQUOTA,
-            -19 ETOOMANYCONNECTIONS)
-        """
-        self.statusBar().showMessage(f"MEGA: cuota agotada para {machine}")
-        # Toast prolongado (cuota) con detalles para el usuario.
-        try:
-            self.toasts.show(
-                "Límite de MEGA alcanzado",
-                f"{machine}: {error_msg.splitlines()[0]}\n"
-                f"La cuota se restaura sola en unas horas; "
-                f"prueba con otra IP/VPN o cuenta MEGA Pro.",
-                kind="warning",
-            )
-        except Exception:  # noqa: BLE001
-            pass
-        if self.settings.os_notifications and self._os_backend:
-            try:
-                notify_os(
-                    "DockerLabs: MEGA cuota agotada",
-                    f"{machine}: límite de transferencia de MEGA superado.",
-                    app_id="DockerLabs GUI",
-                )
-            except Exception:  # noqa: BLE001
-                pass
+    def _on_dm_failed(self, machine: str, kind: str, error_msg: str) -> None:
+        """Una descarga ha fallado (tras los reintentos internos)."""
+        titles = {
+            "not_found": "Máquina no disponible",
+            "unsupported": "Enlace no soportado",
+            "integrity": "Archivo corrupto",
+            "server": "Servidor de DockerLabs no responde",
+        }
+        title = titles.get(kind, "Error de descarga")
+        first_line = (error_msg or "").splitlines()[0] if error_msg else ""
+        self.statusBar().showMessage(f"{title}: {machine}")
+        self.notify(title, f"{machine}: {first_line}", kind="error")
         self._refresh_downloaded_state()
 
     def _open_path(self, path: str) -> None:
@@ -891,7 +873,7 @@ class MainWindow(QMainWindow):
             rows = getattr(self.page_machines, "_all_rows", [])
             names = [r.get("nombre", "") for r in rows if r.get("nombre")]
             if names:
-                self.downloads.reconcile_with_csv(names)
+                self.downloads.reconcile_with_catalog(names)
         except Exception:  # noqa: BLE001
             pass
         self._refresh_downloaded_state()

@@ -4,14 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dockerlabs-gui"
-version = "0.5.0"
-description = "Cliente PyQt6 para DockerLabs con descargas MEGA, toasts y notificaciones del SO"
+version = "1.0.0"
+description = "Cliente de escritorio PyQt6 para DockerLabs: catálogo, descargas directas y lanzador de CTFs con Docker"
 requires-python = ">=3.10"
 authors = [{ name = "Genspark AI" }]
 dependencies = [
     "PyQt6>=6.5",
     "requests>=2.31",
-    "pycryptodome>=3.20",
 ]
 
 [project.optional-dependencies]
@@ -32,7 +31,7 @@ py-modules = [
     "dockerlabs_api",
     "dockerlabs_api_ext",
     "dockerlabs_csv",
-    "mega_downloader",
+    "http_downloader",
     "download_manager",
 ]
 packages = ["widgets"]

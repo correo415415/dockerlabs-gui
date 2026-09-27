@@ -45,6 +45,7 @@ from theme import (
     WARNING,
     difficulty_color,
 )
+from download_manager import human_eta, human_size
 from widgets.avatar import AvatarCircle
 from widgets.icons import icon as svg_icon
 
@@ -232,7 +233,7 @@ class DashboardPage(QWidget):
         body = QLabel(
             "Cliente de escritorio para DockerLabs. Usa el menú lateral para navegar:\n"
             "• Máquinas: catálogo con búsqueda + clic derecho para marcar como hecha o descargar.\n"
-            "• Descargas: progreso en tiempo real de las máquinas que estás bajando desde MEGA.\n"
+            "• Descargas: progreso en tiempo real de las máquinas que estás bajando.\n"
             "• Completadas: máquinas marcadas como hechas en tu cuenta.\n"
             "• Sesión: inicia sesión para sincronizar tu progreso y obtener tu avatar.\n\n"
             "El catálogo se actualiza automáticamente al iniciar (si hay internet)."
@@ -568,7 +569,7 @@ class MachinesPage(QWidget):
             act_dl.setEnabled(False)
             menu.addAction(act_dl)
         else:
-            act_dl = QAction(svg_icon("download", ACCENT, 16), "Descargar desde MEGA", self)
+            act_dl = QAction(svg_icon("download", ACCENT, 16), "Descargar", self)
             if not url:
                 act_dl.setEnabled(False)
                 act_dl.setText("Sin enlace de descarga")
@@ -653,7 +654,6 @@ class DownloadItemWidget(QFrame):
             self.remove_clicked.emit(self.machine)
 
     def update_state(self, state) -> None:
-        from download_manager import human_size, human_eta
         self._state_text = state.state
         self.bar.setValue(int(state.percent))
         self.lbl_state.setText({
@@ -706,7 +706,7 @@ class DownloadsPage(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
         root.addWidget(page_header("Descargas",
-                                   "Máquinas que se están descargando o ya tienes en local"))
+                                   "Máquinas que se están descargando desde DockerLabs"))
 
         body = QVBoxLayout()
         body.setContentsMargins(24, 16, 24, 24)
@@ -725,7 +725,7 @@ class DownloadsPage(QWidget):
 
         self.empty = QLabel(
             "Aún no hay descargas. Ve a Máquinas, haz clic derecho sobre una y elige\n"
-            "“Descargar desde MEGA”. Aparecerá aquí con su barra de progreso."
+            "“Descargar”. Aparecerá aquí con su barra de progreso."
         )
         self.empty.setWordWrap(True)
         self.empty.setStyleSheet(f"color: {FG_MUTED}; font-size: 13px; padding: 24px 0;")
@@ -1033,7 +1033,7 @@ class SettingsPage(QWidget):
         card_dir = self._make_card("Carpeta de descargas")
         cdl = card_dir.layout()
         sub_dir = QLabel(
-            "Aquí se guardan las máquinas descargadas desde MEGA. El CSV del catálogo"
+            "Aquí se guardan los .zip de las máquinas descargadas. El catálogo"
             " se gestiona internamente y no es configurable."
         )
         sub_dir.setStyleSheet(f"color: {FG_MUTED}; font-size: 12px;")
@@ -1178,11 +1178,11 @@ class AboutPage(QWidget):
         body.setSpacing(10)
         info = QLabel(
             "DockerLabs GUI · cliente de escritorio no oficial para dockerlabs.es\n"
-            "Stack: PyQt6, urllib (stdlib), requests, pycryptodome.\n\n"
+            "Stack: PyQt6, urllib (stdlib), requests.\n\n"
             "Construido sobre la API pública /api, los endpoints internos del\n"
             "frontend (toggle_completed_machine, completed_machines, author_profile)\n"
-            "y un cliente propio para descargar archivos públicos de MEGA con\n"
-            "verificación de integridad CBC-MAC."
+            "y descargas HTTP directas desde gestion-maquinas.dockerlabs.es\n"
+            "con reintentos y verificación del zip."
         )
         info.setStyleSheet(f"color: {FG_SECONDARY};")
         info.setWordWrap(True)

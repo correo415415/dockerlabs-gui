@@ -86,17 +86,17 @@ breakmyssh.zip
 
 ---
 
-## 1. Migrar descargas de MEGA a HTTP directo  `[ ]`
+## 1. Migrar descargas de MEGA a HTTP directo  `[x]`
 
-- [ ] Nuevo `http_downloader.py`: streaming `requests`, `Content-Disposition` → nombre de fichero,
+- [x] Nuevo `http_downloader.py`: streaming `requests`, `Content-Disposition` → nombre de fichero,
       progreso (bytes/velocidad/ETA), cancelación, `.part` + rename atómico.
-- [ ] Reintentos con backoff exponencial ante 5xx / errores de red (el servidor da 500 intermitentes).
-- [ ] Verificación básica del zip al terminar (`zipfile.testzip` / firma `PK`).
-- [ ] `download_manager.py`: desacoplar de MEGA; job genérico basado en URL. Cola con
+- [x] Reintentos con backoff exponencial ante 5xx / errores de red (el servidor da 500 intermitentes).
+- [x] Verificación básica del zip al terminar (`zipfile.testzip` / firma `PK`).
+- [x] `download_manager.py`: desacoplar de MEGA; job genérico basado en URL. Cola con
       límite de descargas simultáneas (configurable).
-- [ ] Eliminar `mega_downloader.py` y `pycryptodome` de dependencias (dejar compat: si un
+- [x] Eliminar `mega_downloader.py` y `pycryptodome` de dependencias (dejar compat: si un
       link es de MEGA, mostrar aviso "formato no soportado").
-- [ ] Textos de UI: "Descargar desde MEGA" → "Descargar".
+- [x] Textos de UI: "Descargar desde MEGA" → "Descargar".
 
 ## 2. Lanzar CTFs (multiplataforma)  `[ ]`
 
