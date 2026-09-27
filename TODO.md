@@ -98,26 +98,37 @@ breakmyssh.zip
       link es de MEGA, mostrar aviso "formato no soportado").
 - [x] Textos de UI: "Descargar desde MEGA" → "Descargar".
 
-## 2. Lanzar CTFs (multiplataforma)  `[ ]`
+## 2. Lanzar CTFs (multiplataforma)  `[x]`
 
-- [ ] `docker_manager.py`: detección de Docker (`docker version --format json`), estado del
-      daemon, plataforma (Linux nativo / Docker Desktop Win-mac / WSL2).
-- [ ] Extracción del zip a `~/.dockerlabs-gui/labs/<slug>/` (solo la primera vez, con verificación).
-- [ ] Lectura del `manifest.json` del tar para obtener `RepoTags` sin cargar la imagen, y del
+Implementado en `lab_manager.py` (núcleo sin Qt, testeable), `lab_controller.py`
+(workers Qt) y `widgets/lab_page.py` (página **Laboratorio**).
+
+- [x] Detección de Docker (`docker version --format json`), estado del daemon, plataforma
+      (Linux nativo / Docker Desktop Win-mac / WSL2) y estado del servicio systemd.
+- [x] Extracción del zip a `~/.dockerlabs-gui/labs/<slug>/` (idempotente, con verificación y
+      protección contra path traversal).
+- [x] Lectura del `manifest.json` del tar para obtener `RepoTags` sin cargar la imagen, y del
       config para `ExposedPorts`.
-- [ ] `docker load -i` con progreso (stream de stdout) en un `QThread`.
-- [ ] `docker run -d --name dockerlabs_<slug>` con estrategia de red según plataforma:
-      - Linux: bridge por defecto (IP interna accesible) — comportamiento idéntico a `auto_deploy.sh`.
-      - Windows/macOS: publicar automáticamente los `ExposedPorts` en `127.0.0.1` (mapeo 1:1 si
-        el puerto está libre; si no, puerto alternativo) y mostrar la tabla de mapeos.
-      - Opción "modo host" (Linux) para máquinas que lo necesitan.
-- [ ] Mostrar IP del contenedor, puertos, estado (`running`/`exited`), y acciones:
-      **Iniciar / Detener / Reiniciar / Eliminar (contenedor + imagen) / Abrir shell**.
-- [ ] Página nueva **"Laboratorio"** en el sidebar con las máquinas descargadas y su estado.
-- [ ] Al cerrar la app: preguntar si se detienen los labs en ejecución.
-- [ ] Detectar Docker no instalado → mensaje con enlace de instalación por SO.
-- [ ] Detectar `permission denied` en el socket (Linux, usuario sin grupo docker) → sugerir
-      `sudo usermod -aG docker $USER` o `sudo` (nunca ejecutamos sudo nosotros).
+- [x] `docker load -i` con progreso (stream de stdout) en un `QThread`, cancelable.
+- [x] `docker run -d --name dockerlabs_<slug>` (con labels) y estrategia de red según plataforma:
+      - Linux: bridge por defecto (IP interna accesible) — idéntico a `auto_deploy.sh`.
+      - Windows/macOS: se publican los `ExposedPorts` en `127.0.0.1` (1:1 si está libre; si no,
+        `20000+puerto`) y se muestra la tabla de mapeos.
+      - Opción "modo host" (Linux) configurable en Ajustes.
+- [x] IP del contenedor, puertos, estado y acciones **Iniciar / Detener / Reiniciar / Eliminar
+      (contenedor + imagen) / Abrir shell (terminal del sistema) / Copiar IP**.
+- [x] Página **Laboratorio** en el sidebar; lanzamiento desde el menú contextual de Máquinas.
+- [x] Al cerrar la app: preguntar si se detienen los labs en ejecución.
+- [x] Docker no instalado → mensaje con instrucciones de instalación por SO.
+- [x] **Permisos en Linux**: se detecta si el usuario puede usar el socket sin `sudo`
+      (`os.access` sobre `/var/run/docker.sock` / `DOCKER_HOST` / contexto, y `permission denied`
+      en stderr). Si no puede y la app **no** se inició como root, aparece el botón
+      **«Conceder acceso»**, que abre el **diálogo nativo del sistema** (`pkexec`/polkit; fallback
+      `sudo -A` con askpass gráfico, `lxqt-sudo`, `kdesu`) y ejecuta: `usermod -aG docker`,
+      arranque del servicio y `setfacl -m u:$USER:rw` sobre el socket para que funcione **sin
+      cerrar sesión**. Si el servicio está parado se ofrece **«Iniciar servicio»** (elevado).
+      Si la app corre como root no se pide nada.
+- [ ] (Opcional) Verificación E2E con Docker real (`docker load` + `run`) — pendiente de entorno.
 
 ## 3. Mejoras de GUI (apariencia)  `[ ]`
 

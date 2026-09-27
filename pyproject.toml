@@ -33,5 +33,7 @@ py-modules = [
     "dockerlabs_csv",
     "http_downloader",
     "download_manager",
+    "lab_manager",
+    "lab_controller",
 ]
 packages = ["widgets"]
