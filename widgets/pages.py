@@ -212,11 +212,13 @@ class DashboardPage(QWidget):
         self.card_total = make_card("Máquinas totales", "—", "Catálogo público")
         self.card_done = make_card("Completadas", "—", "Por el usuario actual")
         self.card_downloads = make_card("Descargas", "—", "Máquinas en local")
+        self.card_labs = make_card("Laboratorio", "—", "Comprobando Docker…")
         self.card_session = make_card("Sesión", "Sin sesión", "Login para sincronizar")
         grid.addWidget(self.card_total, 0, 0)
         grid.addWidget(self.card_done, 0, 1)
         grid.addWidget(self.card_downloads, 0, 2)
-        grid.addWidget(self.card_session, 0, 3)
+        grid.addWidget(self.card_labs, 0, 3)
+        grid.addWidget(self.card_session, 0, 4)
         content.addLayout(grid)
 
         hello = QFrame()
@@ -234,6 +236,7 @@ class DashboardPage(QWidget):
             "Cliente de escritorio para DockerLabs. Usa el menú lateral para navegar:\n"
             "• Máquinas: catálogo con búsqueda + clic derecho para marcar como hecha o descargar.\n"
             "• Descargas: progreso en tiempo real de las máquinas que estás bajando.\n"
+            "• Laboratorio: lanza las máquinas descargadas en Docker y gestiona los contenedores.\n"
             "• Completadas: máquinas marcadas como hechas en tu cuenta.\n"
             "• Sesión: inicia sesión para sincronizar tu progreso y obtener tu avatar.\n\n"
             "El catálogo se actualiza automáticamente al iniciar (si hay internet)."
@@ -258,6 +261,21 @@ class DashboardPage(QWidget):
     def set_downloads(self, n: int) -> None:
         self.card_downloads.value_label.setText(str(n))
 
+    def set_labs_running(self, n: int) -> None:
+        self._labs_running = n
+        self.card_labs.value_label.setText(str(n))
+
+    def set_docker(self, info) -> None:
+        sub = self.card_labs.sub_label
+        if sub is None:
+            return
+        if not info.available:
+            sub.setText("Docker no instalado")
+        elif not info.running:
+            sub.setText("Docker no responde")
+        else:
+            sub.setText(f"Docker {info.version} listo · en ejecución")
+
     def set_session(self, username: Optional[str]) -> None:
         if username:
             self.card_session.value_label.setText(username)
@@ -280,6 +298,7 @@ class MachinesPage(QWidget):
     request_toggle_completed = pyqtSignal(str)
     request_download = pyqtSignal(str, str)   # machine, url
     request_cancel_download = pyqtSignal(str)
+    request_launch = pyqtSignal(str)          # machine
 
     def __init__(self, csv_path: Path, parent=None) -> None:
         super().__init__(parent)
@@ -288,6 +307,7 @@ class MachinesPage(QWidget):
         self._completed_names: set[str] = set()
         self._downloading: set[str] = set()
         self._downloaded: set[str] = set()
+        self._running: set[str] = set()
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -432,6 +452,10 @@ class MachinesPage(QWidget):
         self._downloaded = set(names or [])
         self._render()
 
+    def set_running(self, names) -> None:
+        self._running = set(names or [])
+        self._render()
+
     # ---- Render / filtros ----
 
     def _render(self) -> None:
@@ -452,7 +476,10 @@ class MachinesPage(QWidget):
             self.table.setItem(i, 0, it_done)
 
             it_dl = QTableWidgetItem("")
-            if downloading:
+            if name in self._running:
+                it_dl.setIcon(svg_icon("docker", SUCCESS, 16))
+                it_dl.setToolTip("Laboratorio en ejecución")
+            elif downloading:
                 it_dl.setIcon(svg_icon("download", WARNING, 16))
                 it_dl.setToolTip("Descargando…")
             elif downloaded:
@@ -564,8 +591,13 @@ class MachinesPage(QWidget):
             act_dl.triggered.connect(lambda: self.request_cancel_download.emit(name))
             menu.addAction(act_dl)
         elif downloaded:
-            act_dl = QAction(svg_icon("folder", SUCCESS, 16),
-                             "Ya descargada (ver en Descargas)", self)
+            running = name in self._running
+            act_launch = QAction(svg_icon("docker", SUCCESS if not running else FG_MUTED, 16),
+                                 "Ver en Laboratorio" if running else "Lanzar laboratorio (Docker)",
+                                 self)
+            act_launch.triggered.connect(lambda: self.request_launch.emit(name))
+            menu.addAction(act_launch)
+            act_dl = QAction(svg_icon("folder", FG_MUTED, 16), "Ya descargada", self)
             act_dl.setEnabled(False)
             menu.addAction(act_dl)
         else:
@@ -1015,6 +1047,14 @@ class SettingsPage(QWidget):
     request_set_os_notifications = pyqtSignal(bool)
     request_set_in_app_notifications = pyqtSignal(bool)
     request_open_downloads_dir = pyqtSignal()
+    request_set_docker_network = pyqtSignal(str)
+
+    DOCKER_NET_OPTIONS = [
+        ("auto", "Automático (recomendado)"),
+        ("bridge", "Bridge: IP interna del contenedor (Linux nativo)"),
+        ("bridge+ports", "Publicar puertos EXPOSE en 127.0.0.1 (Docker Desktop)"),
+        ("host", "Red del host (solo Linux)"),
+    ]
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -1090,6 +1130,27 @@ class SettingsPage(QWidget):
         cnl.addWidget(self.lbl_backend)
         body.addWidget(card_notif)
 
+        # ---------- Docker ----------
+        card_docker = self._make_card("Laboratorio (Docker)")
+        cdk = card_docker.layout()
+        sub_dk = QLabel(
+            "Cómo se expone la máquina al lanzarla. En Linux con Docker Engine la IP del "
+            "contenedor es accesible directamente; en Docker Desktop (Windows/macOS) no, así "
+            "que se publican los puertos EXPOSE en localhost."
+        )
+        sub_dk.setStyleSheet(f"color: {FG_MUTED}; font-size: 12px;")
+        sub_dk.setWordWrap(True)
+        cdk.addWidget(sub_dk)
+        self.combo_docker_net = QComboBox()
+        for key, label in self.DOCKER_NET_OPTIONS:
+            self.combo_docker_net.addItem(label, key)
+        self.combo_docker_net.setMinimumHeight(36)
+        self.combo_docker_net.currentIndexChanged.connect(
+            lambda _i: self.request_set_docker_network.emit(self.combo_docker_net.currentData() or "auto")
+        )
+        cdk.addWidget(self.combo_docker_net)
+        body.addWidget(card_docker)
+
         # ---------- Info técnica ----------
         card_info = self._make_card("Información")
         cil = card_info.layout()
@@ -1097,7 +1158,7 @@ class SettingsPage(QWidget):
             "• Datos cacheados en: ~/.dockerlabs-gui/\n"
             "• El catálogo se actualiza automáticamente al arrancar si hay internet.\n"
             "• Si no hay conexión, se carga el último CSV disponible.\n"
-            "• La sesión vive sólo en memoria del proceso."
+            "• Los labs se extraen en ~/.dockerlabs-gui/labs/<máquina>/ y los contenedores se llaman dockerlabs_<máquina>."
         )
         info.setStyleSheet(f"color: {FG_SECONDARY}; font-size: 12px;")
         info.setWordWrap(True)
@@ -1126,8 +1187,13 @@ class SettingsPage(QWidget):
     # ---- API ----
 
     def set_state(self, downloads_dir: str, os_notifications: bool,
-                  in_app_notifications: bool, os_backend_available: bool) -> None:
+                  in_app_notifications: bool, os_backend_available: bool,
+                  docker_network: str = "auto") -> None:
         self._current_dir = downloads_dir
+        self.combo_docker_net.blockSignals(True)
+        idx = self.combo_docker_net.findData(docker_network or "auto")
+        self.combo_docker_net.setCurrentIndex(max(0, idx))
+        self.combo_docker_net.blockSignals(False)
         self._os_backend_available = os_backend_available
         self.in_dir.setText(downloads_dir)
         self.in_dir.setToolTip(downloads_dir)

@@ -149,6 +149,7 @@ class Sidebar(QFrame):
             ("dashboard",  "dashboard", "Dashboard"),
             ("machines",   "machines",  "Máquinas"),
             ("downloads",  "download",  "Descargas"),
+            ("lab",        "docker",    "Laboratorio"),
             ("completed",  "completed", "Completadas"),
             ("settings",   "settings",  "Ajustes"),
             ("about",      "info",      "Acerca de"),

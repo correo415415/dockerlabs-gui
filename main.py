@@ -10,6 +10,7 @@ Cambios v0.5:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import platform
 import subprocess
@@ -23,6 +24,7 @@ from PyQt6.QtWidgets import (
     QApplication,
     QHBoxLayout,
     QMainWindow,
+    QMessageBox,
     QStackedWidget,
     QWidget,
 )
@@ -37,6 +39,7 @@ from dockerlabs_api import (
 from dockerlabs_api_ext import DockerLabsExtClient
 from completed_store import CompletedStore
 from download_manager import DownloadManager
+from lab_controller import LabController
 from notifier import notify_os, os_backend_available
 from settings_store import SettingsStore, UserSettings
 from theme import QSS
@@ -51,6 +54,7 @@ from widgets.pages import (
     SessionPage,
     SettingsPage,
 )
+from widgets.lab_page import LabPage
 from widgets.sidebar import Sidebar
 from widgets.toast import ToastManager
 
@@ -61,6 +65,7 @@ CSV_DIR = APP_DIR / "csv"
 CSV_DIR.mkdir(parents=True, exist_ok=True)
 DEFAULT_DOWNLOADS_DIR = APP_DIR / "downloads"
 DEFAULT_DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
+LABS_DIR = APP_DIR / "labs"
 SETTINGS_FILE = APP_DIR / "settings.json"
 DEFAULT_CSV = CSV_DIR / "dockerlabs_maquinas.csv"
 ENV_FILE = APP_DIR / ".env"
@@ -257,10 +262,21 @@ class MainWindow(QMainWindow):
         self.downloads.download_completed.connect(self._on_dm_completed)
         self.downloads.download_failed.connect(self._on_dm_failed)
 
+        # lab (Docker) controller
+        self.labs = LabController(LABS_DIR, network_preference=self.settings.docker_network,
+                                  parent=self)
+        self.labs.docker_info_changed.connect(self._on_docker_info)
+        self.labs.list_changed.connect(self._on_labs_list)
+        self.labs.lab_changed.connect(self._on_lab_changed)
+        self.labs.lab_started.connect(self._on_lab_started)
+        self.labs.lab_failed.connect(self._on_lab_failed)
+        self.labs.lab_action_done.connect(self._on_lab_action_done)
+
         # páginas
         self.page_dashboard = DashboardPage()
         self.page_machines = MachinesPage(DEFAULT_CSV)
         self.page_downloads = DownloadsPage()
+        self.page_lab = LabPage()
         self.page_completed = CompletedPage()
         self.page_session = SessionPage()
         self.page_settings = SettingsPage()
@@ -271,6 +287,7 @@ class MainWindow(QMainWindow):
             "dashboard": self.page_dashboard,
             "machines":  self.page_machines,
             "downloads": self.page_downloads,
+            "lab":       self.page_lab,
             "completed": self.page_completed,
             "settings":  self.page_settings,
             "about":     self.page_about,
@@ -286,6 +303,11 @@ class MainWindow(QMainWindow):
         self.page_downloads.request_cancel.connect(self._cancel_download)
         self.page_downloads.request_remove.connect(self._remove_download)
         self.page_downloads.request_open.connect(self._open_download_folder)
+        self.page_machines.request_launch.connect(self._launch_lab)
+        self.page_lab.request_action.connect(self._lab_action)
+        self.page_lab.request_refresh.connect(self._refresh_docker)
+        self.page_lab.request_go_machines.connect(lambda: self._go("machines"))
+        self.page_settings.request_set_docker_network.connect(self._set_docker_network)
         self.page_session.request_login.connect(self._do_login)
         self.page_session.request_logout.connect(self._do_logout)
         self.page_completed.request_refresh.connect(self._refresh_completed)
@@ -323,6 +345,8 @@ class MainWindow(QMainWindow):
         self._refresh_downloaded_state()
         # Auto-login si hay sesión guardada
         self._try_restore_session()
+        # Docker
+        self._refresh_docker()
 
     # ---- Navegación ----
 
@@ -878,6 +902,93 @@ class MainWindow(QMainWindow):
             pass
         self._refresh_downloaded_state()
 
+    # ---- Laboratorio (Docker) ----
+
+    def _refresh_docker(self) -> None:
+        self.page_lab.set_docker_info(None, "")
+        self.labs.refresh_docker_info()
+
+    def _on_docker_info(self, info) -> None:
+        self.page_lab.set_docker_info(info, self.labs.install_hint())
+        self.page_dashboard.set_docker(info)
+
+    def _on_labs_list(self) -> None:
+        labs = self.labs.all_labs()
+        self.page_lab.render_labs(labs)
+        self.page_machines.set_running({s.machine for s in labs if s.phase == "running"})
+        self.page_dashboard.set_labs_running(sum(1 for s in labs if s.phase == "running"))
+
+    def _on_lab_changed(self, machine: str) -> None:
+        st = self.labs.lab(machine)
+        if st is not None:
+            self.page_lab.update_lab(st)
+
+    def _launch_lab(self, name: str) -> None:
+        info = self.labs.docker_info
+        if not info.available:
+            self.notify("Docker no está instalado", self.labs.install_hint().splitlines()[0],
+                        kind="error")
+            self._go("lab")
+            return
+        if not info.running:
+            self.notify("Docker no responde", (info.error or "").splitlines()[0], kind="error")
+            self._go("lab")
+            return
+        zip_path = self.downloads.downloaded_paths().get(name)
+        if zip_path is None:
+            self.notify("Primero descarga la máquina",
+                        f"{name} no está en la carpeta de descargas.", kind="warning")
+            return
+        if not self.labs.launch(name, zip_path):
+            self.notify("Ya en marcha", f"{name} ya se está desplegando.", kind="info")
+            return
+        self.notify("Desplegando laboratorio", name, kind="info")
+        self._go("lab")
+
+    def _lab_action(self, machine: str, action: str) -> None:
+        if action == "copy_ip":
+            self.notify("IP copiada", "La IP de la máquina está en el portapapeles.", kind="success")
+        elif action == "shell":
+            if not self.labs.open_shell(machine):
+                st = self.labs.lab(machine)
+                cmd = " ".join(self.labs.client.exec_shell_command(st.container_name)) if st else ""
+                self.notify("No se pudo abrir la terminal",
+                            f"Ejecuta manualmente: {cmd}", kind="warning")
+        elif action == "start":
+            self.labs.start(machine)
+        elif action == "stop":
+            self.labs.stop(machine)
+        elif action == "restart":
+            self.labs.restart(machine)
+        elif action == "cancel":
+            self.labs.cancel_launch(machine)
+        elif action == "remove":
+            res = QMessageBox.question(
+                self, "Eliminar laboratorio",
+                f"¿Eliminar el contenedor y la imagen Docker de «{machine}»?\n"
+                "El .zip descargado se conserva; podrás volver a lanzarla.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if res == QMessageBox.StandardButton.Yes:
+                self.labs.remove(machine, remove_image=True)
+
+    def _on_lab_started(self, machine: str, access_text: str) -> None:
+        self.notify("Laboratorio en marcha", f"{machine}\n{access_text}", kind="success",
+                    on_click=lambda _p: self._go("lab"), payload=machine)
+
+    def _on_lab_failed(self, machine: str, error: str) -> None:
+        self.notify(f"Error en {machine}", error.splitlines()[0] if error else "", kind="error")
+
+    def _on_lab_action_done(self, machine: str, action: str) -> None:
+        verbs = {"stop": "detenida", "start": "iniciada", "restart": "reiniciada",
+                 "remove": "eliminada"}
+        self.notify(f"{machine} {verbs.get(action, action)}", kind="info")
+
+    def _set_docker_network(self, mode: str) -> None:
+        self.settings.docker_network = mode or "auto"
+        self.settings_store.save(self.settings)
+        self.labs.set_network_preference(self.settings.docker_network)
+
     # ---- Ajustes ----
 
     def _refresh_settings_page(self) -> None:
@@ -886,6 +997,7 @@ class MainWindow(QMainWindow):
             os_notifications=self.settings.os_notifications,
             in_app_notifications=self.settings.in_app_notifications,
             os_backend_available=self._os_backend,
+            docker_network=self.settings.docker_network,
         )
 
     def _set_downloads_dir(self, path: str) -> None:
@@ -928,10 +1040,29 @@ class MainWindow(QMainWindow):
     # ---- Cierre ----
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
+        running = self.labs.running_labs()
+        if running:
+            names = ", ".join(s.machine for s in running)
+            res = QMessageBox.question(
+                self, "Laboratorios en ejecución",
+                f"Hay {len(running)} laboratorio(s) en marcha: {names}.\n\n"
+                "¿Quieres detenerlos antes de salir?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                | QMessageBox.StandardButton.Cancel,
+            )
+            if res == QMessageBox.StandardButton.Cancel:
+                event.ignore()
+                return
+            if res == QMessageBox.StandardButton.Yes:
+                self.labs.stop_all()
+        try:
+            self.labs.shutdown()
+        except Exception as exc:  # noqa: BLE001
+            logging.getLogger(__name__).warning("labs.shutdown: %s", exc)
         try:
             self.downloads.shutdown()
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001
+            logging.getLogger(__name__).warning("downloads.shutdown: %s", exc)
         for worker in list(self._workers):
             try:
                 if worker.isRunning():

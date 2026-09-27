@@ -16,6 +16,7 @@ class UserSettings:
     os_notifications: bool = True
     in_app_notifications: bool = True
     max_concurrent_downloads: int = 2
+    docker_network: str = "auto"   # auto | bridge | bridge+ports | host
 
     @classmethod
     def from_dict(cls, data: dict) -> "UserSettings":
@@ -24,6 +25,7 @@ class UserSettings:
             os_notifications=bool(data.get("os_notifications", True)),
             in_app_notifications=bool(data.get("in_app_notifications", True)),
             max_concurrent_downloads=max(1, min(6, int(data.get("max_concurrent_downloads", 2) or 2))),
+            docker_network=str(data.get("docker_network", "auto") or "auto"),
         )
 
 
