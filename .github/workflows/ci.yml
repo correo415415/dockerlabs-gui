@@ -1,0 +1,55 @@
+name: CI
+
+# Ejecución SOLO manual (Actions → CI → Run workflow) para no consumir minutos en cada push.
+on:
+  workflow_dispatch:
+    inputs:
+      os:
+        description: "Sistemas a probar"
+        type: choice
+        default: all
+        options: [all, ubuntu, windows, macos]
+
+# Sin caché de Actions (no disponible en esta cuenta): cada job instala desde cero.
+jobs:
+  test:
+    name: tests (${{ matrix.os }}, py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.11"]
+        include:
+          - os: ubuntu-latest
+            python: "3.9"
+    env:
+      QT_QPA_PLATFORM: offscreen
+      # 'true' si este SO fue seleccionado en el disparo manual
+      SELECTED: ${{ inputs.os == 'all' || startsWith(matrix.os, inputs.os) }}
+    steps:
+      - name: Omitido (SO no seleccionado)
+        if: env.SELECTED != 'true'
+        run: echo "Job omitido; se pidió solo '${{ inputs.os }}'."
+      - uses: actions/checkout@v4
+        if: env.SELECTED == 'true'
+      - uses: actions/setup-python@v5
+        if: env.SELECTED == 'true'
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Linux Qt runtime libs
+        if: env.SELECTED == 'true' && runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libegl1 libgl1 libxkbcommon0 libdbus-1-3 \
+            libfontconfig1 libglib2.0-0 libxcb-cursor0 libxcb-icccm4 libxcb-keysyms1 \
+            libxcb-shape0 libxcb-xinerama0 libxcb-render-util0 libxcb-image0
+      - name: Instalar dependencias
+        if: env.SELECTED == 'true'
+        run: pip install -r requirements.txt pytest ruff
+      - name: Lint (ruff)
+        if: env.SELECTED == 'true'
+        run: ruff check .
+      - name: Tests
+        if: env.SELECTED == 'true'
+        run: pytest tests -q

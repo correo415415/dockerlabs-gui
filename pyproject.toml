@@ -4,14 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dockerlabs-gui"
-version = "0.5.0"
-description = "Cliente PyQt6 para DockerLabs con descargas MEGA, toasts y notificaciones del SO"
+version = "1.0.0"
+description = "Cliente de escritorio PyQt6 para DockerLabs: catálogo, descargas directas y lanzador de CTFs con Docker"
 requires-python = ">=3.10"
 authors = [{ name = "Genspark AI" }]
 dependencies = [
     "PyQt6>=6.5",
     "requests>=2.31",
-    "pycryptodome>=3.20",
 ]
 
 [project.optional-dependencies]
@@ -32,7 +31,27 @@ py-modules = [
     "dockerlabs_api",
     "dockerlabs_api_ext",
     "dockerlabs_csv",
-    "mega_downloader",
+    "http_downloader",
     "download_manager",
+    "lab_manager",
+    "lab_controller",
+    "app_logging",
+    "catalog",
+    "completed_store",
+    "workers",
+    "session_controller",
+    "catalog_controller",
 ]
 packages = ["widgets"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py39"
+exclude = [".venv", "build", "dist"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "I"]
+ignore = ["E501", "E701", "E702", "B008", "B904", "E402", "E731", "E741"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E702", "E701", "B"]

@@ -15,12 +15,11 @@ from PyQt6.QtCore import (
     QPoint,
     QPropertyAnimation,
     QRect,
-    QSize,
     Qt,
     QTimer,
     pyqtSignal,
 )
-from PyQt6.QtGui import QColor, QPainter, QPainterPath
+from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QFrame,
     QGraphicsDropShadowEffect,
@@ -33,8 +32,9 @@ from PyQt6.QtWidgets import (
 
 from theme import (
     ACCENT,
-    BG_MID,
     BG_LIGHT,
+    BG_MID,
+    BORDER_SOFT,
     DANGER,
     FG_MUTED,
     FG_PRIMARY,
@@ -42,7 +42,6 @@ from theme import (
     WARNING,
 )
 from widgets.icons import pixmap as svg_pixmap
-
 
 _KIND_COLORS = {
     "info":    ACCENT,
@@ -83,7 +82,7 @@ class Toast(QFrame):
         self.setFixedWidth(self.WIDTH)
         self.setStyleSheet(
             f"QFrame#toast {{ background: {BG_MID};"
-            f" border: 1px solid #2a2f3a; border-left: 4px solid {self._accent};"
+            f" border: 1px solid {BORDER_SOFT}; border-left: 4px solid {self._accent};"
             f" border-radius: 10px; }}"
             f"QFrame#toast:hover {{ background: {BG_LIGHT}; }}"
         )

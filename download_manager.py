@@ -1,9 +1,9 @@
 """Gestor de descargas con QThread para integrarse con la UI.
 
-- Cada descarga es un `DownloadJob` (QThread) que descarga un enlace MEGA
-  emitiendo señales `progress`, `info_ready`, `finished_ok`, `failed`.
-- `DownloadManager` (QObject) mantiene el registro global de descargas
-  activas/terminadas y emite señales agregadas para la UI.
+- Cada descarga es un `DownloadJob` (QThread) que baja un fichero por HTTP
+  directo emitiendo señales `progress`, `info_ready`, `finished_ok`, `failed`.
+- `DownloadManager` (QObject) mantiene una cola con un límite de descargas
+  simultáneas, el registro de estados y el índice de ficheros ya en disco.
 """
 from __future__ import annotations
 
@@ -11,22 +11,27 @@ import logging
 import re
 import threading
 import unicodedata
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, Optional
+from typing import Dict, Iterable, List, Optional
 
 from PyQt6.QtCore import QObject, QThread, pyqtSignal
 
-from mega_downloader import (
+from http_downloader import (
+    DownloadCancelled,
+    DownloadError,
+    DownloadInfo,
+    DownloadIntegrityError,
+    DownloadNotFound,
     DownloadProgress,
-    MegaApiError,
-    MegaCancelled,
-    MegaIntegrityError,
-    MegaPublicDownloader,
-    MegaQuotaError,
+    DownloadServerError,
+    HttpDownloader,
+    UnsupportedLinkError,
 )
 
 logger = logging.getLogger(__name__)
+
+ARCHIVE_SUFFIXES = {".zip", ".7z", ".rar", ".tar", ".gz", ".tgz"}
 
 
 @dataclass
@@ -49,90 +54,93 @@ class DownloadState:
             return 0.0
         return min(100.0, self.bytes_done * 100.0 / self.size_total)
 
+    @property
+    def is_active(self) -> bool:
+        return self.state in ("queued", "running", "verifying")
+
 
 class DownloadJob(QThread):
-    progress = pyqtSignal(str, DownloadProgress)         # machine, prog
-    info_ready = pyqtSignal(str, dict)                   # machine, info
-    finished_ok = pyqtSignal(str, str)                   # machine, final_path
-    failed = pyqtSignal(str, str)                        # machine, error_msg
-    quota_exceeded = pyqtSignal(str, str)                # machine, error_msg
+    progress = pyqtSignal(str, object)         # machine, DownloadProgress
+    info_ready = pyqtSignal(str, object)       # machine, DownloadInfo
+    finished_ok = pyqtSignal(str, str)         # machine, final_path
+    failed = pyqtSignal(str, str, str)         # machine, kind, error_msg
 
     def __init__(self, machine: str, url: str, dest_dir: Path,
+                 preferred_name: Optional[str] = None,
                  parent: Optional[QObject] = None) -> None:
         super().__init__(parent)
         self.machine = machine
         self.url = url
         self.dest_dir = dest_dir
+        self.preferred_name = preferred_name
         self._cancel = threading.Event()
-        self._downloader = MegaPublicDownloader()
+        self._downloader = HttpDownloader()
 
     def cancel(self) -> None:
         self._cancel.set()
 
     def run(self) -> None:
         try:
-            def _on_info(info: dict) -> None:
-                self.info_ready.emit(self.machine, info)
-
-            def _on_progress(p: DownloadProgress) -> None:
-                self.progress.emit(self.machine, p)
-
             final = self._downloader.download(
                 self.url,
                 self.dest_dir,
                 cancel_event=self._cancel,
-                on_progress=_on_progress,
-                on_info=_on_info,
+                on_progress=lambda p: self.progress.emit(self.machine, p),
+                on_info=lambda i: self.info_ready.emit(self.machine, i),
+                preferred_name=self.preferred_name,
             )
             self.finished_ok.emit(self.machine, str(final))
-        except MegaCancelled:
-            self.failed.emit(self.machine, "Cancelada por el usuario")
-        except MegaQuotaError as exc:
-            # MEGA ha bloqueado la descarga por límite de ancho de banda.
-            # Señal específica para que la UI muestre un toast distinto.
-            logger.warning("MEGA quota: %s", exc)
-            self.quota_exceeded.emit(self.machine, str(exc))
-        except MegaApiError as exc:
-            self.failed.emit(self.machine, str(exc))
-        except MegaIntegrityError as exc:
-            self.failed.emit(self.machine, f"Integridad: {exc}")
+        except DownloadCancelled:
+            self.failed.emit(self.machine, "cancelled", "Cancelada por el usuario")
+        except DownloadNotFound as exc:
+            self.failed.emit(self.machine, "not_found", str(exc))
+        except UnsupportedLinkError as exc:
+            self.failed.emit(self.machine, "unsupported", str(exc))
+        except DownloadIntegrityError as exc:
+            self.failed.emit(self.machine, "integrity", str(exc))
+        except DownloadServerError as exc:
+            self.failed.emit(self.machine, "server", str(exc))
+        except DownloadError as exc:
+            self.failed.emit(self.machine, "error", str(exc))
         except Exception as exc:  # noqa: BLE001
-            logger.exception("Download error")
-            self.failed.emit(self.machine, str(exc))
+            logger.exception("Error inesperado descargando %s", self.machine)
+            self.failed.emit(self.machine, "error", str(exc))
 
 
 class DownloadManager(QObject):
-    """Gestor global de descargas (un job por máquina simultáneamente)."""
+    """Gestor global de descargas con cola y límite de concurrencia."""
 
-    state_changed = pyqtSignal(str)        # machine
+    state_changed = pyqtSignal(str)                 # machine
     list_changed = pyqtSignal()
-    download_completed = pyqtSignal(str, str)  # machine, final_path
-    quota_exceeded = pyqtSignal(str, str)  # machine, error_msg
+    download_completed = pyqtSignal(str, str)       # machine, final_path
+    download_failed = pyqtSignal(str, str, str)     # machine, kind, error
 
-    def __init__(self, dest_dir: Path, parent: Optional[QObject] = None) -> None:
+    def __init__(self, dest_dir: Path, max_concurrent: int = 2,
+                 parent: Optional[QObject] = None) -> None:
         super().__init__(parent)
         self.dest_dir = Path(dest_dir).expanduser().resolve()
         self.dest_dir.mkdir(parents=True, exist_ok=True)
+        self.max_concurrent = max(1, int(max_concurrent))
         self._jobs: Dict[str, DownloadJob] = {}
+        self._queue: List[str] = []
         self._states: Dict[str, DownloadState] = {}
         self._completed_paths: Dict[str, Path] = {}
         self._scan_existing()
 
-    def set_dest_dir(self, new_dir: Path) -> None:
-        """Cambia la carpeta de destino en caliente.
+    # ---------- Configuración ----------
 
-        Las descargas en curso siguen usando la carpeta antigua; las nuevas
-        usaran la nueva ruta. Tambien re-escanea la nueva carpeta para
-        descubrir ficheros que ya esten alli.
-        """
+    def set_max_concurrent(self, n: int) -> None:
+        self.max_concurrent = max(1, int(n))
+        self._pump()
+
+    def set_dest_dir(self, new_dir: Path) -> None:
+        """Cambia la carpeta de destino en caliente (las descargas en curso
+        siguen en la carpeta antigua) y re-escanea la nueva."""
         new_dir = Path(new_dir).expanduser().resolve()
         new_dir.mkdir(parents=True, exist_ok=True)
         if new_dir == self.dest_dir:
             return
         self.dest_dir = new_dir
-        # Reiniciamos el indice de "ya descargados" basandonos solo en la nueva
-        # carpeta. Conservamos los states de jobs en curso/terminados de la
-        # sesion actual (los path absolutos siguen siendo validos).
         self._completed_paths = {
             m: p for m, p in self._completed_paths.items()
             if p.exists() and p.is_absolute()
@@ -142,41 +150,39 @@ class DownloadManager(QObject):
 
     # ---------- API ----------
 
-    def start(self, machine: str, url: str) -> bool:
-        if machine in self._jobs and self._jobs[machine].isRunning():
+    def start(self, machine: str, url: str,
+              preferred_name: Optional[str] = None) -> bool:
+        """Encola una descarga. Devuelve False si ya está activa o en disco."""
+        st = self._states.get(machine)
+        if st is not None and st.is_active:
             return False
-        # Si ya tenemos la maquina descargada y el fichero sigue ahi, no
-        # volvemos a descargar. La UI debe interceptar antes, pero esto
-        # es la red de seguridad final.
-        #
-        # IMPORTANTE: NO creamos `_states[machine]` para no contaminar la
-        # pagina 'Descargas' (esa pagina solo muestra descargas de la
-        # sesion actual). El mapa `_completed_paths` ya basta para que la
-        # UI sepa que la maquina esta en disco.
         existing = self._completed_paths.get(machine)
         if existing and existing.exists():
             self.list_changed.emit()
             return False
         state = DownloadState(machine=machine, url=url, dest_dir=self.dest_dir,
-                              state="queued")
+                              state="queued", filename=preferred_name or "")
         self._states[machine] = state
-        job = DownloadJob(machine, url, self.dest_dir, parent=self)
-        job.info_ready.connect(self._on_info)
-        job.progress.connect(self._on_progress)
-        job.finished_ok.connect(self._on_finished_ok)
-        job.failed.connect(self._on_failed)
-        job.quota_exceeded.connect(self._on_quota_exceeded)
-        job.finished.connect(lambda m=machine: self._cleanup(m))
-        self._jobs[machine] = job
-        job.start()
+        if machine not in self._queue:
+            self._queue.append(machine)
         self.list_changed.emit()
         self.state_changed.emit(machine)
+        self._pump()
         return True
 
     def cancel(self, machine: str) -> None:
         job = self._jobs.get(machine)
         if job is not None and job.isRunning():
             job.cancel()
+            return
+        if machine in self._queue:  # en cola, aún no había empezado
+            self._queue.remove(machine)
+            s = self._states.get(machine)
+            if s is not None:
+                s.state = "cancelled"
+                s.error = "Cancelada por el usuario"
+            self.state_changed.emit(machine)
+            self.list_changed.emit()
 
     def state(self, machine: str) -> Optional[DownloadState]:
         return self._states.get(machine)
@@ -184,84 +190,93 @@ class DownloadManager(QObject):
     def all_states(self) -> list[DownloadState]:
         return list(self._states.values())
 
+    def active_count(self) -> int:
+        return sum(1 for s in self._states.values() if s.is_active)
+
     def downloaded_paths(self) -> Dict[str, Path]:
-        """Mapa de máquina → fichero final, filtrando los que aún existen."""
-        return {
-            m: p for m, p in self._completed_paths.items() if p.exists()
-        }
+        """Mapa máquina → fichero final, filtrando los que aún existen."""
+        return {m: p for m, p in self._completed_paths.items() if p.exists()}
 
-    def reconcile_with_csv(self, machine_names: Iterable[str]) -> None:
-        """Cruza los archivos detectados en la carpeta con la lista de
-        nombres reales del CSV.
-
-        Al arrancar, `_scan_existing` registra ficheros con clave provisional
-        (el ``stem`` del fichero, p.ej. ``psycho``). Cuando el CSV ya está
-        cargado, este método los reemplaza por el nombre EXACTO de la
-        máquina (``Psycho``), de modo que el cruce con el estado de la UI
-        funcione y futuras descargas de la misma máquina se detecten como
-        ya existentes.
-
-        El emparejamiento ignora mayúsculas, acentos y caracteres no
-        alfanuméricos para resistir variaciones triviales del CSV vs el
-        nombre que MEGA guarda en disco.
-        """
-        # Mapa normalizado -> nombre real del CSV
+    def reconcile_with_catalog(self, machine_names: Iterable[str]) -> None:
+        """Cruza los archivos detectados en la carpeta con los nombres reales
+        del catálogo (ignorando mayúsculas, acentos y no alfanuméricos)."""
         by_norm: Dict[str, str] = {}
         for raw in machine_names:
             if raw:
-                by_norm.setdefault(_normalize_name(raw), raw)
-
+                by_norm.setdefault(normalize_name(raw), raw)
+        real_names = set(by_norm.values())
         renamed: Dict[str, Path] = {}
         for key, path in self._completed_paths.items():
-            # Si la clave ya es un nombre real del CSV, lo dejamos tal cual
-            if key in by_norm.values():
+            if key in real_names:
                 renamed[key] = path
                 continue
-            # Intentamos resolver por nombre del fichero
-            norm = _normalize_name(Path(path).stem)
-            real = by_norm.get(norm)
+            stem = Path(path).stem
+            real = by_norm.get(normalize_name(stem))
             if real is None:
-                # Probamos quitando sufijos tipo ' (1)' o '.zip.part'
-                cleaned = re.sub(r"\s*\(\d+\)$", "", Path(path).stem)
-                real = by_norm.get(_normalize_name(cleaned))
-            if real is not None:
-                renamed[real] = path
-            else:
-                # No emparejado: lo dejamos con su clave provisional para no
-                # perder la referencia (el usuario podrá borrarlo a mano).
-                renamed[key] = path
-
+                cleaned = re.sub(r"\s*\(\d+\)$", "", stem)
+                real = by_norm.get(normalize_name(cleaned))
+            renamed[real if real is not None else key] = path
         self._completed_paths = renamed
         self.list_changed.emit()
 
+    reconcile_with_csv = reconcile_with_catalog  # compat
+
     def remove(self, machine: str, also_delete_file: bool = False) -> None:
-        state = self._states.pop(machine, None)
+        self._states.pop(machine, None)
+        if machine in self._queue:
+            self._queue.remove(machine)
         path = self._completed_paths.pop(machine, None)
         if also_delete_file and path and path.exists():
             try:
                 path.unlink()
-            except OSError:
-                pass
+            except OSError as exc:
+                logger.warning("No se pudo borrar %s: %s", path, exc)
+        self.list_changed.emit()
+
+    def clear_finished(self) -> None:
+        """Quita de la lista las descargas terminadas / fallidas / canceladas."""
+        for m in [m for m, s in self._states.items() if not s.is_active]:
+            self._states.pop(m, None)
         self.list_changed.emit()
 
     def shutdown(self) -> None:
+        self._queue.clear()
         for job in list(self._jobs.values()):
             try:
                 job.cancel()
                 if job.isRunning():
-                    job.quit()
-                    job.wait(1500)
+                    job.wait(3000)
             except RuntimeError:
                 pass
 
+    # ---------- Cola ----------
+
+    def _pump(self) -> None:
+        running = sum(1 for j in self._jobs.values() if j.isRunning())
+        while self._queue and running < self.max_concurrent:
+            machine = self._queue.pop(0)
+            st = self._states.get(machine)
+            if st is None or st.state != "queued":
+                continue
+            job = DownloadJob(machine, st.url, self.dest_dir,
+                              preferred_name=st.filename or None, parent=self)
+            job.info_ready.connect(self._on_info)
+            job.progress.connect(self._on_progress)
+            job.finished_ok.connect(self._on_finished_ok)
+            job.failed.connect(self._on_failed)
+            job.finished.connect(lambda m=machine: self._cleanup(m))
+            self._jobs[machine] = job
+            job.start()
+            running += 1
+
     # ---------- Slots de los workers ----------
 
-    def _on_info(self, machine: str, info: dict) -> None:
+    def _on_info(self, machine: str, info: DownloadInfo) -> None:
         s = self._states.get(machine)
         if s is None:
             return
-        s.filename = info.get("name", "")
-        s.size_total = int(info.get("size", 0))
+        s.filename = info.name
+        s.size_total = int(info.size)
         s.state = "running"
         self.state_changed.emit(machine)
 
@@ -270,10 +285,12 @@ class DownloadManager(QObject):
         if s is None:
             return
         s.bytes_done = p.bytes_done
-        s.size_total = p.bytes_total or s.size_total
+        if p.bytes_total:
+            s.size_total = p.bytes_total
         s.speed_bps = p.speed_bps
         s.eta_seconds = p.eta_seconds
-        s.state = p.state
+        if p.state in ("running", "verifying"):
+            s.state = p.state
         self.state_changed.emit(machine)
 
     def _on_finished_ok(self, machine: str, final_path: str) -> None:
@@ -283,79 +300,57 @@ class DownloadManager(QObject):
             s.state = "done"
             s.final_path = path
             s.bytes_done = s.size_total
+            s.filename = path.name
         self._completed_paths[machine] = path
         self.state_changed.emit(machine)
         self.download_completed.emit(machine, str(path))
-        # Auto-eliminar el state de la lista de descargas activas: ya está
-        # en `_completed_paths`, así que la máquina seguirá reconociéndose
-        # como descargada, pero no aparecerá en la página 'Descargas'.
-        self._states.pop(machine, None)
         self.list_changed.emit()
 
-    def _on_failed(self, machine: str, error: str) -> None:
+    def _on_failed(self, machine: str, kind: str, error: str) -> None:
         s = self._states.get(machine)
         if s is not None:
-            s.state = "cancelled" if "Cancelada" in error else "error"
+            s.state = "cancelled" if kind == "cancelled" else "error"
             s.error = error
         self.state_changed.emit(machine)
         self.list_changed.emit()
-
-    def _on_quota_exceeded(self, machine: str, error: str) -> None:
-        """Slot dedicado: MEGA ha bloqueado la descarga por cuota.
-
-        Marca el state como error y reemite la señal hacia la UI para
-        que muestre un toast específico (no un toast genérico de error).
-        """
-        s = self._states.get(machine)
-        if s is not None:
-            s.state = "error"
-            s.error = error
-        self.state_changed.emit(machine)
-        self.list_changed.emit()
-        self.quota_exceeded.emit(machine, error)
+        if kind != "cancelled":
+            self.download_failed.emit(machine, kind, error)
 
     def _cleanup(self, machine: str) -> None:
-        # No borramos del registro: queremos seguir mostrando el ítem
-        self._jobs.pop(machine, None)
+        job = self._jobs.pop(machine, None)
+        if job is not None:
+            job.deleteLater()
+        self._pump()
 
     def _scan_existing(self) -> None:
-        """Indexa los archivos válidos de la carpeta de descargas.
-
-        Se usa una clave provisional basada en el nombre del fichero. Más
-        tarde `reconcile_with_csv` la sustituye por el nombre real de la
-        máquina cuando el CSV está disponible.
-        """
+        """Indexa los archivos de la carpeta de descargas con clave provisional
+        (stem); `reconcile_with_catalog` la sustituye por el nombre real."""
         if not self.dest_dir.exists():
             return
         for p in self.dest_dir.iterdir():
-            if not p.is_file():
+            if not p.is_file() or p.name.startswith("."):
                 continue
             if p.name.endswith(".part"):
                 continue
-            if p.name.startswith("."):
+            if p.suffix.lower() not in ARCHIVE_SUFFIXES:
                 continue
-            # Solo aceptamos extensiones plausibles de máquina (zip/7z/rar/tar)
-            if p.suffix.lower() not in {".zip", ".7z", ".rar", ".tar", ".gz", ".tgz", ".tar.gz"}:
-                continue
-            # clave provisional = nombre sin extensión
-            key = p.stem
-            # Evita pisar entradas ya resueltas con el nombre real del CSV
-            if key not in self._completed_paths:
-                self._completed_paths[key] = p
+            self._completed_paths.setdefault(p.stem, p)
 
 
-def _normalize_name(name: str) -> str:
-    """Normaliza un nombre para comparaciones fuzzy (lowercase, sin acentos,
-    sin caracteres no alfanuméricos).
+# =====================================================================
+# Helpers
+# =====================================================================
 
-    'Pequeñas-Mentirosas' -> 'pequenasmentirosas'
-    'WhereIsMyWebShell'    -> 'whereismywebshell'
-    """
+def normalize_name(name: str) -> str:
+    """'Pequeñas-Mentirosas' -> 'pequenasmentirosas'"""
     if not name:
         return ""
     decomposed = unicodedata.normalize("NFKD", name)
     stripped = "".join(c for c in decomposed if not unicodedata.combining(c))
     return re.sub(r"[^a-z0-9]+", "", stripped.lower())
+
+
+_normalize_name = normalize_name  # compat
 
 
 def human_size(n: float) -> str:

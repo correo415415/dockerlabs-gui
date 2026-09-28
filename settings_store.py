@@ -3,11 +3,15 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _valid_theme(value) -> str:
+    return value if value in ("dark", "light") else "dark"
 
 
 @dataclass
@@ -15,6 +19,9 @@ class UserSettings:
     downloads_dir: str = ""
     os_notifications: bool = True
     in_app_notifications: bool = True
+    max_concurrent_downloads: int = 2
+    docker_network: str = "auto"   # auto | bridge | bridge+ports | host
+    theme: str = "dark"            # dark | light
 
     @classmethod
     def from_dict(cls, data: dict) -> "UserSettings":
@@ -22,6 +29,9 @@ class UserSettings:
             downloads_dir=str(data.get("downloads_dir", "") or ""),
             os_notifications=bool(data.get("os_notifications", True)),
             in_app_notifications=bool(data.get("in_app_notifications", True)),
+            max_concurrent_downloads=max(1, min(6, int(data.get("max_concurrent_downloads", 2) or 2))),
+            docker_network=str(data.get("docker_network", "auto") or "auto"),
+            theme=_valid_theme(data.get("theme")),
         )
 
 

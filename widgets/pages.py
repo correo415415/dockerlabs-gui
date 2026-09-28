@@ -1,18 +1,14 @@
 """Páginas (vistas) del QStackedWidget central."""
 from __future__ import annotations
 
-import csv
-from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
-from PyQt6.QtCore import QObject, QSize, Qt, QThread, QPoint, pyqtSignal
-from PyQt6.QtGui import QAction, QColor, QFont, QPalette
+from PyQt6.QtCore import QObject, QPoint, Qt, pyqtSignal
+from PyQt6.QtGui import QAction, QColor, QPalette
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
     QComboBox,
-    QStyledItemDelegate,
-    QStyleOptionViewItem,
     QFileDialog,
     QFrame,
     QGridLayout,
@@ -27,73 +23,46 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QSpacerItem,
-    QTableWidget,
-    QTableWidgetItem,
+    QSpinBox,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
     QVBoxLayout,
     QWidget,
 )
 
+from download_manager import human_eta, human_size
 from theme import (
     ACCENT,
     BG_LIGHT,
     BG_MID,
+    BORDER_SOFT,
     DANGER,
     FG_MUTED,
     FG_PRIMARY,
     FG_SECONDARY,
+    ON_ACCENT,
     SUCCESS,
     WARNING,
     difficulty_color,
 )
 from widgets.avatar import AvatarCircle
 from widgets.icons import icon as svg_icon
-
+from widgets.skeleton import LoadingPanel
+from workers import BaseWorker
 
 # ============================================================
 # Workers compartidos
 # ============================================================
 
-class FetchAPIWorker(QThread):
+class FetchAPIWorker(BaseWorker):
     finished_data = pyqtSignal(dict)
-    failed = pyqtSignal(str)
 
     def __init__(self, client, parent: Optional[QObject] = None) -> None:
         super().__init__(parent)
         self.client = client
 
-    def run(self) -> None:
-        try:
-            data = self.client.fetch_api_data()
-            self.finished_data.emit(data)
-        except Exception as exc:  # noqa: BLE001
-            self.failed.emit(str(exc))
-
-
-class ExportWorker(QThread):
-    done = pyqtSignal(dict)
-    failed = pyqtSignal(str)
-
-    def __init__(self, client, output_dir: str, prefix: str, parent=None) -> None:
-        super().__init__(parent)
-        self.client = client
-        self.output_dir = output_dir
-        self.prefix = prefix
-
-    def run(self) -> None:
-        try:
-            from dockerlabs_api import API_URL
-            from dockerlabs_csv import export_machines
-            data = self.client.fetch_api_data()
-            machines = data.get("info_maquinas", [])
-            summary = export_machines(
-                machines,
-                Path(self.output_dir),
-                prefix=self.prefix,
-                api_url=API_URL,
-            )
-            self.done.emit(summary)
-        except Exception as exc:  # noqa: BLE001
-            self.failed.emit(str(exc))
+    def work(self) -> None:
+        self.finished_data.emit(self.client.fetch_api_data())
 
 
 # ============================================================
@@ -119,7 +88,8 @@ class _GhostComboBox(QComboBox):
     def paintEvent(self, event):  # type: ignore[override]
         # No llamamos al estilo nativo. Pintamos: fondo, texto y flecha.
         from PyQt6.QtGui import QPainter, QPen
-        from theme import BG_MID, BG_LIGHT, FG_PRIMARY, FG_MUTED, ACCENT
+
+        from theme import ACCENT, BG_LIGHT, BG_MID, FG_MUTED, FG_PRIMARY
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         rect = self.rect()
@@ -133,8 +103,8 @@ class _GhostComboBox(QComboBox):
         text_rect = rect.adjusted(14, 0, -32, 0)
         p.drawText(text_rect, int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft), self.currentText())
         # Flecha triángulo
-        from PyQt6.QtGui import QPolygon
         from PyQt6.QtCore import QPoint
+        from PyQt6.QtGui import QPolygon
         cx = rect.right() - 16
         cy = rect.center().y() + 1
         tri = QPolygon([QPoint(cx - 5, cy - 3), QPoint(cx + 5, cy - 3), QPoint(cx, cy + 3)])
@@ -142,6 +112,38 @@ class _GhostComboBox(QComboBox):
         p.setBrush(QColor(ACCENT) if hovered else QColor(FG_MUTED))
         p.drawPolygon(tri)
         p.end()
+
+
+def ghost_combo(options: list[tuple[str, str]], min_width: int = 150, height: int = 38) -> QComboBox:
+    """Crea un `_GhostComboBox` con items (data, label) y paleta acorde al tema activo."""
+    from theme import BG_HOVER, BG_MID, FG_PRIMARY
+    combo = _GhostComboBox()
+    for data, label in options:
+        combo.addItem(label, data)
+    combo.setMinimumHeight(height)
+    combo.setMinimumWidth(min_width)
+    combo.setCursor(Qt.CursorShape.PointingHandCursor)
+    pal = combo.palette()
+    mid = QColor(BG_MID)
+    hover = QColor(BG_HOVER)
+    fg = QColor(FG_PRIMARY)
+    for role in (QPalette.ColorRole.Highlight, QPalette.ColorRole.Base,
+                 QPalette.ColorRole.Button, QPalette.ColorRole.Window):
+        pal.setColor(role, mid)
+    pal.setColor(QPalette.ColorRole.HighlightedText, fg)
+    pal.setColor(QPalette.ColorRole.ButtonText, fg)
+    pal.setColor(QPalette.ColorRole.WindowText, fg)
+    pal.setColor(QPalette.ColorRole.Text, fg)
+    combo.setPalette(pal)
+    view = combo.view()
+    view_pal = view.palette()
+    view_pal.setColor(QPalette.ColorRole.Highlight, hover)
+    view_pal.setColor(QPalette.ColorRole.HighlightedText, fg)
+    view_pal.setColor(QPalette.ColorRole.Base, mid)
+    view.setPalette(view_pal)
+    combo.setItemDelegate(_ComboItemDelegate(combo))
+    combo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+    return combo
 
 
 def make_card(title: str, value: str, sub: str = "") -> QFrame:
@@ -175,7 +177,7 @@ def page_header(title: str, subtitle: str) -> QFrame:
     bar = QFrame()
     bar.setObjectName("topbar")
     bar.setStyleSheet(
-        f"QFrame#topbar {{ background: {BG_MID}; border-bottom: 1px solid #2a2f3a; }}"
+        f"QFrame#topbar {{ background: {BG_MID}; border-bottom: 1px solid {BORDER_SOFT}; }}"
     )
     bar.setFixedHeight(72)
     layout = QVBoxLayout(bar)
@@ -194,6 +196,132 @@ def page_header(title: str, subtitle: str) -> QFrame:
 # Dashboard
 # ============================================================
 
+
+class _Panel(QFrame):
+    body: QVBoxLayout
+
+
+def _panel(title: str) -> _Panel:
+    f = _Panel()
+    f.setObjectName("dashPanel")
+    f.setStyleSheet(
+        f"QFrame#dashPanel {{ background: {BG_MID}; border: 1px solid {BORDER_SOFT}; border-radius: 12px; }}"
+    )
+    lay = QVBoxLayout(f)
+    lay.setContentsMargins(18, 14, 18, 16)
+    lay.setSpacing(10)
+    t = QLabel(title)
+    t.setStyleSheet(f"font-size: 13px; font-weight: 700; color: {FG_PRIMARY}; background: transparent;")
+    lay.addWidget(t)
+    f.body = lay
+    return f
+
+
+def _muted(text: str) -> QLabel:
+    lb = QLabel(text)
+    lb.setStyleSheet(f"color: {FG_MUTED}; font-size: 11px; background: transparent;")
+    lb.setWordWrap(True)
+    return lb
+
+
+def _clear_layout(lay) -> None:
+    while lay.count():
+        it = lay.takeAt(0)
+        w = it.widget()
+        if w is not None:
+            w.hide()
+            w.setParent(None)
+            w.deleteLater()
+
+
+class _DiffRow(QWidget):
+    """Fila `● Dificultad  3/40` con mini barra de progreso coloreada."""
+
+    def __init__(self, difficulty: str, parent=None) -> None:
+        super().__init__(parent)
+        color = difficulty_color(difficulty)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(3)
+        top = QHBoxLayout()
+        top.setSpacing(6)
+        dot = QLabel("●")
+        dot.setStyleSheet(f"color: {color}; font-size: 10px; background: transparent;")
+        name = QLabel(difficulty)
+        name.setStyleSheet(f"color: {FG_SECONDARY}; font-size: 12px; background: transparent;")
+        self.lbl_count = QLabel("—")
+        self.lbl_count.setStyleSheet(f"color: {FG_PRIMARY}; font-size: 12px; font-weight: 600; background: transparent;")
+        top.addWidget(dot)
+        top.addWidget(name)
+        top.addStretch(1)
+        top.addWidget(self.lbl_count)
+        self.bar = QProgressBar()
+        self.bar.setRange(0, 100)
+        self.bar.setTextVisible(False)
+        self.bar.setFixedHeight(6)
+        self.bar.setStyleSheet(
+            f"QProgressBar {{ background: {BG_LIGHT}; border: 0; border-radius: 3px; }}"
+            f"QProgressBar::chunk {{ background: {color}; border-radius: 3px; }}"
+        )
+        lay.addLayout(top)
+        lay.addWidget(self.bar)
+
+    def set_values(self, done: int, total: int) -> None:
+        self.lbl_count.setText(f"{done}/{total}")
+        self.bar.setValue(int(round(100 * done / total)) if total else 0)
+
+
+class _LatestRow(QFrame):
+    def __init__(self, m, done: bool, parent=None) -> None:
+        super().__init__(parent)
+        self.setStyleSheet("background: transparent;")
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 2, 0, 2)
+        lay.setSpacing(10)
+        dot = QLabel("●")
+        dot.setStyleSheet(f"color: {difficulty_color(m.difficulty)}; font-size: 10px;")
+        name = QLabel(m.name)
+        name.setStyleSheet(f"color: {FG_PRIMARY}; font-size: 12px; font-weight: 600;")
+        diff = QLabel(m.difficulty)
+        diff.setStyleSheet(f"color: {FG_MUTED}; font-size: 11px;")
+        author = QLabel(m.author or "")
+        author.setStyleSheet(f"color: {FG_SECONDARY}; font-size: 11px;")
+        date = QLabel(m.date or "")
+        date.setStyleSheet(f"color: {FG_MUTED}; font-size: 11px;")
+        lay.addWidget(dot)
+        lay.addWidget(name)
+        lay.addWidget(diff)
+        if done:
+            ok = QLabel("✓")
+            ok.setStyleSheet(f"color: {SUCCESS}; font-weight: 800; font-size: 12px;")
+            ok.setToolTip("Completada")
+            lay.addWidget(ok)
+        lay.addStretch(1)
+        lay.addWidget(author)
+        lay.addWidget(date)
+
+
+class _RankRow(QFrame):
+    def __init__(self, pos: int, name: str, count: int, parent=None) -> None:
+        super().__init__(parent)
+        self.setStyleSheet("background: transparent;")
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 2, 0, 2)
+        lay.setSpacing(10)
+        medal = {1: "#facc15", 2: "#cbd5e1", 3: "#d97706"}.get(pos, FG_MUTED)
+        num = QLabel(f"{pos}.")
+        num.setFixedWidth(20)
+        num.setStyleSheet(f"color: {medal}; font-weight: 800; font-size: 12px;")
+        lbl = QLabel(name)
+        lbl.setStyleSheet(f"color: {FG_PRIMARY}; font-size: 12px;")
+        cnt = QLabel(f"{count} máquinas")
+        cnt.setStyleSheet(f"color: {FG_SECONDARY}; font-size: 11px;")
+        lay.addWidget(num)
+        lay.addWidget(lbl)
+        lay.addStretch(1)
+        lay.addWidget(cnt)
+
+
 class DashboardPage(QWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -211,42 +339,109 @@ class DashboardPage(QWidget):
         self.card_total = make_card("Máquinas totales", "—", "Catálogo público")
         self.card_done = make_card("Completadas", "—", "Por el usuario actual")
         self.card_downloads = make_card("Descargas", "—", "Máquinas en local")
+        self.card_labs = make_card("Laboratorio", "—", "Comprobando Docker…")
         self.card_session = make_card("Sesión", "Sin sesión", "Login para sincronizar")
         grid.addWidget(self.card_total, 0, 0)
         grid.addWidget(self.card_done, 0, 1)
         grid.addWidget(self.card_downloads, 0, 2)
-        grid.addWidget(self.card_session, 0, 3)
+        grid.addWidget(self.card_labs, 0, 3)
+        grid.addWidget(self.card_session, 0, 4)
         content.addLayout(grid)
 
-        hello = QFrame()
-        hello.setObjectName("helloCard")
-        hello.setStyleSheet(
-            f"QFrame#helloCard {{ background: {BG_MID}; border: 1px solid #2a2f3a;"
-            f" border-radius: 12px; }}"
+        # --- Progreso global ---------------------------------------------------
+        prog = _panel("Tu progreso")
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        self.progress.setTextVisible(False)
+        self.progress.setFixedHeight(10)
+        self.progress.setStyleSheet(
+            f"QProgressBar {{ background: {BG_LIGHT}; border: 0; border-radius: 5px; }}"
+            f"QProgressBar::chunk {{ background: {ACCENT}; border-radius: 5px; }}"
         )
-        hl = QVBoxLayout(hello)
-        hl.setContentsMargins(20, 18, 20, 18)
-        hl.setSpacing(6)
-        title = QLabel("Bienvenido a DockerLabs GUI")
-        title.setStyleSheet(f"font-size: 16px; font-weight: 700; color: {FG_PRIMARY};")
-        body = QLabel(
-            "Cliente de escritorio para DockerLabs. Usa el menú lateral para navegar:\n"
-            "• Máquinas: catálogo con búsqueda + clic derecho para marcar como hecha o descargar.\n"
-            "• Descargas: progreso en tiempo real de las máquinas que estás bajando desde MEGA.\n"
-            "• Completadas: máquinas marcadas como hechas en tu cuenta.\n"
-            "• Sesión: inicia sesión para sincronizar tu progreso y obtener tu avatar.\n\n"
-            "El catálogo se actualiza automáticamente al iniciar (si hay internet)."
-        )
-        body.setStyleSheet(f"color: {FG_SECONDARY}; font-size: 13px;")
-        body.setWordWrap(True)
-        hl.addWidget(title)
-        hl.addWidget(body)
-        content.addWidget(hello)
+        self.lbl_progress = QLabel("Cargando catálogo…")
+        self.lbl_progress.setStyleSheet(f"color: {FG_SECONDARY}; font-size: 12px; background: transparent;")
+        prog.body.addWidget(self.lbl_progress)
+        prog.body.addWidget(self.progress)
+        self.diff_rows: Dict[str, "_DiffRow"] = {}
+        diff_grid = QGridLayout()
+        diff_grid.setHorizontalSpacing(14)
+        diff_grid.setVerticalSpacing(6)
+        for i, d in enumerate(("Muy Fácil", "Fácil", "Medio", "Difícil")):
+            row = _DiffRow(d)
+            self.diff_rows[d] = row
+            diff_grid.addWidget(row, i // 2, i % 2)
+        prog.body.addLayout(diff_grid)
+        content.addWidget(prog)
 
-        content.addItem(QSpacerItem(0, 0, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding))
+        # --- Últimas máquinas + ranking ------------------------------------------
+        cols = QHBoxLayout()
+        cols.setSpacing(14)
+        self.panel_latest = _panel("Últimas máquinas publicadas")
+        self.latest_host = QVBoxLayout()
+        self.latest_host.setSpacing(4)
+        self.panel_latest.body.addLayout(self.latest_host)
+        self.panel_latest.body.addStretch(1)
+        self.panel_ranking = _panel("Top creadores")
+        self.ranking_host = QVBoxLayout()
+        self.ranking_host.setSpacing(4)
+        self.panel_ranking.body.addLayout(self.ranking_host)
+        self.panel_ranking.body.addStretch(1)
+        cols.addWidget(self.panel_latest, 3)
+        cols.addWidget(self.panel_ranking, 2)
+        content.addLayout(cols, 1)
+        for host in (self.latest_host, self.ranking_host):
+            lb = QLabel("Sin datos todavía — el catálogo se carga al iniciar (F5 para actualizar).")
+            lb.setStyleSheet(f"color: {FG_MUTED}; font-size: 11px; background: transparent;")
+            lb.setWordWrap(True)
+            host.addWidget(lb)
+
         wrap = QFrame()
         wrap.setLayout(content)
         root.addWidget(wrap, 1)
+        self._catalog = None
+        self._completed: set = set()
+
+    # ------------------------------------------------------------------ catálogo
+    def set_catalog(self, catalog, completed=None) -> None:
+        """Rellena progreso, desglose por dificultad, últimas máquinas y ranking."""
+        self._catalog = catalog
+        if completed is not None:
+            self._completed = set(completed)
+        total = len(catalog.machines)
+        names = set(catalog.names())
+        done = len(self._completed & names) if names else len(self._completed)
+        self.set_total(total)
+        self.set_done(len(self._completed))
+        pct = int(round(100 * done / total)) if total else 0
+        self.progress.setValue(pct)
+        self.lbl_progress.setText(
+            f"<b style='color:{FG_PRIMARY}'>{done}</b> de {total} máquinas completadas · {pct}%"
+            if total else "Catálogo vacío"
+        )
+        by_all = catalog.counts_by_difficulty()
+        by_done = catalog.counts_by_difficulty(self._completed)
+        for d, row in self.diff_rows.items():
+            row.set_values(by_done.get(d, 0), by_all.get(d, 0))
+
+        _clear_layout(self.latest_host)
+        for m in catalog.latest(6):
+            self.latest_host.addWidget(_LatestRow(m, m.name in self._completed))
+        if not catalog.machines:
+            self.latest_host.addWidget(_muted("El catálogo está vacío."))
+
+        _clear_layout(self.ranking_host)
+        ranking = sorted(catalog.ranking_creators, key=lambda r: -int(r.get("maquinas", 0) or 0))[:6]
+        for i, r in enumerate(ranking, 1):
+            self.ranking_host.addWidget(_RankRow(i, str(r.get("nombre", "—")), int(r.get("maquinas", 0) or 0)))
+        if not ranking:
+            self.ranking_host.addWidget(_muted("Sin ranking disponible."))
+
+    def set_completed(self, completed) -> None:
+        self._completed = set(completed or [])
+        if self._catalog is not None:
+            self.set_catalog(self._catalog)
+        self.set_done(len(self._completed))
 
     def set_total(self, n: int) -> None:
         self.card_total.value_label.setText(str(n))
@@ -256,6 +451,23 @@ class DashboardPage(QWidget):
 
     def set_downloads(self, n: int) -> None:
         self.card_downloads.value_label.setText(str(n))
+
+    def set_labs_running(self, n: int) -> None:
+        self._labs_running = n
+        self.card_labs.value_label.setText(str(n))
+
+    def set_docker(self, info) -> None:
+        sub = self.card_labs.sub_label
+        if sub is None:
+            return
+        if not info.available:
+            sub.setText("Docker no instalado")
+        elif getattr(info, "needs_elevation", False):
+            sub.setText("Docker: falta permiso (ver Laboratorio)")
+        elif not info.running:
+            sub.setText("Docker no responde")
+        else:
+            sub.setText(f"Docker {info.version} listo · en ejecución")
 
     def set_session(self, username: Optional[str]) -> None:
         if username:
@@ -276,35 +488,64 @@ DIFICULTADES = ["Todas", "Muy Fácil", "Fácil", "Medio", "Difícil"]
 
 
 class MachinesPage(QWidget):
+    """Catálogo: tabla (modelo/proxy) + panel de detalle lateral."""
+
     request_toggle_completed = pyqtSignal(str)
     request_download = pyqtSignal(str, str)   # machine, url
     request_cancel_download = pyqtSignal(str)
+    request_launch = pyqtSignal(str)          # machine
+    request_refresh_catalog = pyqtSignal()
 
-    def __init__(self, csv_path: Path, parent=None) -> None:
+    STATES = ["Todas", "Completadas", "Pendientes", "Descargadas", "En ejecución"]
+
+    def __init__(self, client=None, parent=None) -> None:
         super().__init__(parent)
-        self.csv_path = csv_path
-        self._all_rows: List[Dict[str, str]] = []
+        from PyQt6.QtWidgets import QSplitter, QTableView
+
+        from widgets.machine_detail import MachineDetailPanel
+        from widgets.machine_model import (
+            COL_AUTHOR,
+            COL_DATE,
+            COL_DIFF,
+            COL_DONE,
+            COL_NAME,
+            COL_STATE,
+            DifficultyBadgeDelegate,
+            MachineFilterProxy,
+            MachineTableModel,
+        )
+        self._catalog = None
         self._completed_names: set[str] = set()
         self._downloading: set[str] = set()
         self._downloaded: set[str] = set()
+        self._running: set[str] = set()
+        self._col = dict(done=COL_DONE, state=COL_STATE, name=COL_NAME, diff=COL_DIFF,
+                         author=COL_AUTHOR, date=COL_DATE)
+
+        self.model = MachineTableModel(self)
+        self.proxy = MachineFilterProxy(self)
+        self.proxy.setSourceModel(self.model)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
         root.addWidget(page_header("Máquinas", "Catálogo público de DockerLabs"))
 
-        body = QVBoxLayout()
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setChildrenCollapsible(False)
+        splitter.setHandleWidth(1)
+
+        left = QWidget()
+        body = QVBoxLayout(left)
         body.setContentsMargins(24, 16, 24, 24)
         body.setSpacing(12)
 
-        # Barra de búsqueda con icono SVG
         filter_bar = QHBoxLayout()
         filter_bar.setSpacing(10)
-
         search_wrap = QFrame()
         search_wrap.setObjectName("searchWrap")
         search_wrap.setStyleSheet(
-            f"QFrame#searchWrap {{ background: {BG_LIGHT}; border: 1px solid #2a2f3a;"
+            f"QFrame#searchWrap {{ background: {BG_LIGHT}; border: 1px solid {BORDER_SOFT};"
             f" border-radius: 8px; }}"
         )
         sl = QHBoxLayout(search_wrap)
@@ -314,226 +555,226 @@ class MachinesPage(QWidget):
         search_icon.setPixmap(svg_icon("search", FG_MUTED, 18).pixmap(18, 18))
         sl.addWidget(search_icon)
         self.search = QLineEdit()
-        self.search.setPlaceholderText("Buscar por nombre, autor o categoría…")
+        self.search.setPlaceholderText("Buscar por nombre, autor o descripción…  (Ctrl+F)")
         self.search.setFrame(False)
+        self.search.setClearButtonEnabled(True)
         self.search.setStyleSheet(
             f"QLineEdit {{ background: transparent; border: none;"
             f" color: {FG_PRIMARY}; padding: 8px 0; }}"
         )
-        self.search.textChanged.connect(self._apply_filters)
+        self.search.textChanged.connect(self.proxy.set_query)
         sl.addWidget(self.search, 1)
         search_wrap.setMinimumHeight(38)
         filter_bar.addWidget(search_wrap, 2)
 
         self.combo_diff = self._make_combo("Dificultad", DIFICULTADES)
-        self.combo_diff.currentIndexChanged.connect(self._apply_filters)
+        self.combo_diff.currentIndexChanged.connect(
+            lambda _i: self.proxy.set_difficulty(self.combo_diff.currentData() or "Todas"))
         filter_bar.addWidget(self.combo_diff, 0)
-
-        self.combo_state = self._make_combo(
-            "Estado", ["Todas", "Completadas", "Pendientes", "Descargadas"]
-        )
-        self.combo_state.currentIndexChanged.connect(self._apply_filters)
+        self.combo_state = self._make_combo("Estado", self.STATES)
+        self.combo_state.currentIndexChanged.connect(
+            lambda _i: self.proxy.set_state(self.combo_state.currentData() or "Todas"))
         filter_bar.addWidget(self.combo_state, 0)
 
+        self.btn_refresh = QPushButton()
+        self.btn_refresh.setIcon(svg_icon("refresh", FG_PRIMARY, 16))
+        self.btn_refresh.setToolTip("Actualizar catálogo (F5)")
+        self.btn_refresh.setFixedSize(38, 38)
+        self.btn_refresh.setProperty("class", "ghost")
+        self.btn_refresh.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_refresh.clicked.connect(self.request_refresh_catalog.emit)
+        filter_bar.addWidget(self.btn_refresh, 0)
         body.addLayout(filter_bar)
 
-        # Tabla (sin la columna 'Categoría' porque coincide con 'Dificultad')
-        self.table = QTableWidget(0, 6)
-        self.table.setHorizontalHeaderLabels(
-            ["", "", "Nombre", "Dificultad", "Autor", "Fecha"]
-        )
+        self.table = QTableView()
+        self.table.setModel(self.proxy)
         self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(34)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        for col, w in ((0, 36), (1, 36)):
-            self.table.horizontalHeader().setSectionResizeMode(col, QHeaderView.ResizeMode.Fixed)
-            self.table.setColumnWidth(col, w)
+        self.table.setShowGrid(False)
         self.table.setSortingEnabled(True)
+        self.table.sortByColumn(COL_NAME, Qt.SortOrder.AscendingOrder)
+        self.table.setItemDelegateForColumn(COL_DIFF, DifficultyBadgeDelegate(self.table))
+        hh = self.table.horizontalHeader()
+        hh.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        hh.setHighlightSections(False)
+        for col, w in ((COL_DONE, 36), (COL_STATE, 36)):
+            hh.setSectionResizeMode(col, QHeaderView.ResizeMode.Fixed)
+            self.table.setColumnWidth(col, w)
+        hh.setSectionResizeMode(COL_DIFF, QHeaderView.ResizeMode.Fixed)
+        self.table.setColumnWidth(COL_DIFF, 120)
+        hh.setSectionResizeMode(COL_DATE, QHeaderView.ResizeMode.Fixed)
+        self.table.setColumnWidth(COL_DATE, 100)
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._show_context_menu)
+        self.table.selectionModel().currentRowChanged.connect(self._on_current_changed)
+        self.table.doubleClicked.connect(lambda _i: self._open_detail_for_current(force=True))
         body.addWidget(self.table, 1)
 
-        # Footer
+        # Estado cargando (skeleton + spinner) y estado vacío
+        self.loading = LoadingPanel(rows=10)
+        body.addWidget(self.loading, 1)
+        self.empty = QLabel("Sin catálogo.")
+        self.empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.empty.setStyleSheet(f"color: {FG_MUTED}; font-size: 13px; padding: 24px;")
+        self.empty.setVisible(False)
+        body.addWidget(self.empty)
+        self.table.setVisible(False)
+
         self.lbl_count = QLabel("Cargando…")
         self.lbl_count.setStyleSheet(f"color: {FG_MUTED};")
         body.addWidget(self.lbl_count)
+        splitter.addWidget(left)
 
-        wrap = QFrame(); wrap.setLayout(body)
-        root.addWidget(wrap, 1)
+        self.detail = MachineDetailPanel(client=client)
+        self.detail.request_download.connect(self.request_download)
+        self.detail.request_cancel_download.connect(self.request_cancel_download)
+        self.detail.request_launch.connect(self.request_launch)
+        self.detail.request_toggle_completed.connect(self.request_toggle_completed)
+        self.detail.request_close.connect(self.close_detail)
+        splitter.addWidget(self.detail)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 0)
+        root.addWidget(splitter, 1)
+
+        self.proxy.rowsInserted.connect(lambda *_: self._update_count())
+        self.proxy.rowsRemoved.connect(lambda *_: self._update_count())
+        self.proxy.modelReset.connect(self._update_count)
+        self.proxy.layoutChanged.connect(self._update_count)
+        self._update_count()
 
     def _make_combo(self, prefix: str, options: list[str]) -> QComboBox:
         """ComboBox 'ghost' que muestra 'prefix: opcion' y se disimula con el tema."""
-        from theme import BG_MID, BG_LIGHT, BG_HOVER, FG_PRIMARY
-        combo = _GhostComboBox()
-        for opt in options:
-            combo.addItem(f"{prefix}: {opt}", opt)
-        combo.setMinimumHeight(38)
-        combo.setMinimumWidth(150)
-        combo.setCursor(Qt.CursorShape.PointingHandCursor)
-        # 1) Sobrescribir paleta para neutralizar el Highlight cian nativo
-        pal = combo.palette()
-        mid = QColor(BG_MID)
-        hover = QColor(BG_HOVER)
-        fg = QColor(FG_PRIMARY)
-        for role in (QPalette.ColorRole.Highlight,
-                     QPalette.ColorRole.Base,
-                     QPalette.ColorRole.Button,
-                     QPalette.ColorRole.Window):
-            pal.setColor(role, mid)
-        pal.setColor(QPalette.ColorRole.HighlightedText, fg)
-        pal.setColor(QPalette.ColorRole.ButtonText, fg)
-        pal.setColor(QPalette.ColorRole.WindowText, fg)
-        pal.setColor(QPalette.ColorRole.Text, fg)
-        combo.setPalette(pal)
-        view = combo.view()
-        view_pal = view.palette()
-        view_pal.setColor(QPalette.ColorRole.Highlight, hover)
-        view_pal.setColor(QPalette.ColorRole.HighlightedText, fg)
-        view_pal.setColor(QPalette.ColorRole.Base, mid)
-        view.setPalette(view_pal)
-        # 2) Delegado propio que ignora el flag 'State_Selected' del current
-        #    cuando el popup está cerrado, evitando la franja cian.
-        delegate = _ComboItemDelegate(combo)
-        combo.setItemDelegate(delegate)
-        combo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        return combo
+        return ghost_combo([(opt, f"{prefix}: {opt}") for opt in options], min_width=150)
 
     # ---- API pública ----
 
-    def load_csv(self, path: Path) -> None:
-        if not path.exists():
-            self.lbl_count.setText("CSV no disponible aún…")
-            return
-        try:
-            rows: List[Dict[str, str]] = []
-            with path.open(encoding="utf-8") as fh:
-                reader = csv.DictReader(fh)
-                for r in reader:
-                    rows.append(r)
-            self._all_rows = rows
-            self.csv_path = path
-            self._render()
-        except Exception as exc:  # noqa: BLE001
-            self.lbl_count.setText(f"Error cargando CSV: {exc}")
+    def set_catalog(self, catalog) -> None:
+        self._catalog = catalog
+        self.model.set_machines(catalog.machines if catalog else [])
+        has = bool(catalog and catalog.machines)
+        self.loading.setVisible(False)
+        self.table.setVisible(has)
+        self.empty.setVisible(not has)
+        if not has:
+            self.empty.setText("Sin catálogo. Pulsa Actualizar cuando tengas conexión.")
+        self._update_count()
+        # refrescar el detalle si la máquina sigue existiendo
+        if self.detail.machine and catalog:
+            m = catalog.by_name().get(self.detail.machine.name)
+            if m:
+                self.detail.show_machine(m, catalog.writeups_for(m.name))
+                self._push_status_to_detail()
+
+    def set_loading(self, loading: bool, text: str = "") -> None:
+        """Muestra el skeleton mientras no haya filas; con catálogo sólo bloquea el botón."""
+        self.btn_refresh.setEnabled(not loading)
+        if loading and not self.model.rowCount():
+            self.loading.set_text(text or "Cargando catálogo…")
+            self.loading.setVisible(True)
+            self.empty.setVisible(False)
+            self.table.setVisible(False)
+            self.lbl_count.setText("Cargando…")
+        elif not loading and not self.model.rowCount():
+            self.loading.setVisible(False)
+            self.empty.setVisible(True)
+            self.lbl_count.setText("Sin catálogo")
+
+    @property
+    def is_loading(self) -> bool:
+        return self.loading.isVisible()
+
+    @property
+    def machines(self):
+        return self.model.machines()
+
+    @property
+    def names(self) -> list[str]:
+        return [m.name for m in self.model.machines()]
+
+    def machine(self, name: str):
+        return self.model.machine_by_name(name)
 
     def set_completed(self, names) -> None:
         self._completed_names = set(names or [])
-        self._render()
+        self.model.set_completed(self._completed_names)
+        self._update_count(); self._push_status_to_detail()
 
     def set_downloading(self, names) -> None:
         self._downloading = set(names or [])
-        self._render()
+        self.model.set_downloading(self._downloading)
+        self._push_status_to_detail()
 
     def set_downloaded(self, names) -> None:
         self._downloaded = set(names or [])
-        self._render()
+        self.model.set_downloaded(self._downloaded)
+        self._update_count(); self._push_status_to_detail()
 
-    # ---- Render / filtros ----
+    def set_running(self, names) -> None:
+        self._running = set(names or [])
+        self.model.set_running(self._running)
+        self._push_status_to_detail()
 
-    def _render(self) -> None:
-        rows = self._filtered_rows()
-        self.table.setSortingEnabled(False)
-        self.table.setRowCount(len(rows))
-        for i, r in enumerate(rows):
-            name = r.get("nombre", "")
-            done = name in self._completed_names
-            downloading = name in self._downloading
-            downloaded = name in self._downloaded
+    def focus_search(self) -> None:
+        self.search.setFocus(); self.search.selectAll()
 
-            it_done = QTableWidgetItem("")
-            if done:
-                it_done.setIcon(svg_icon("check", ACCENT, 16))
-                it_done.setToolTip("Completada")
-            it_done.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.table.setItem(i, 0, it_done)
+    def show_detail(self, name: str) -> None:
+        m = self.model.machine_by_name(name)
+        if not m:
+            return
+        wu = self._catalog.writeups_for(name) if self._catalog else []
+        self.detail.show_machine(m, wu)
+        self._push_status_to_detail()
 
-            it_dl = QTableWidgetItem("")
-            if downloading:
-                it_dl.setIcon(svg_icon("download", WARNING, 16))
-                it_dl.setToolTip("Descargando…")
-            elif downloaded:
-                it_dl.setIcon(svg_icon("folder", SUCCESS, 16))
-                it_dl.setToolTip("Descargada en local")
-            it_dl.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.table.setItem(i, 1, it_dl)
+    def close_detail(self) -> None:
+        self.detail.setVisible(False)
 
-            it_name = QTableWidgetItem(name)
-            f = QFont(it_name.font()); f.setBold(True)
-            it_name.setFont(f)
-            self.table.setItem(i, 2, it_name)
+    # ---- internos ----
 
-            diff = r.get("dificultad", "")
-            it_diff = QTableWidgetItem(diff)
-            it_diff.setForeground(QColor(difficulty_color(diff)))
-            self.table.setItem(i, 3, it_diff)
-
-            self.table.setItem(i, 4, QTableWidgetItem(r.get("autor", "")))
-            self.table.setItem(i, 5, QTableWidgetItem(r.get("fecha", "")))
-
-        self.table.setSortingEnabled(True)
-        total = len(self._all_rows)
-        shown = len(rows)
-        done = sum(1 for r in self._all_rows if r.get("nombre", "") in self._completed_names)
-        dl = sum(1 for r in self._all_rows if r.get("nombre", "") in self._downloaded)
+    def _update_count(self) -> None:
+        total = self.model.rowCount()
+        shown = self.proxy.rowCount()
+        done = sum(1 for n in self.names if n in self._completed_names)
+        dl = sum(1 for n in self.names if n in self._downloaded)
         self.lbl_count.setText(
             f"{shown} de {total} máquinas · {done} completadas · {dl} descargadas"
+            if total else ("Cargando…" if self.loading.isVisible() else "Sin catálogo")
         )
+        if total and shown == 0:
+            self.empty.setText("Ninguna máquina coincide con los filtros.")
+            self.empty.setVisible(True)
+        elif total:
+            self.empty.setVisible(False)
 
-    def _filtered_rows(self) -> List[Dict[str, str]]:
-        q = self.search.text().strip().lower()
-        diff = self.combo_diff.currentData() or "Todas"
-        state = self.combo_state.currentData() or "Todas"
-        out: List[Dict[str, str]] = []
-        for r in self._all_rows:
-            blob = " ".join([
-                r.get("nombre", ""),
-                r.get("autor", ""),
-                r.get("clase", ""),
-                r.get("autores_parseados", ""),
-            ]).lower()
-            if q and q not in blob:
-                continue
-            if diff != "Todas" and (r.get("dificultad", "").strip().lower() != diff.lower()):
-                continue
-            done = r.get("nombre", "") in self._completed_names
-            downloaded = r.get("nombre", "") in self._downloaded
-            if state == "Completadas" and not done:
-                continue
-            if state == "Pendientes" and done:
-                continue
-            if state == "Descargadas" and not downloaded:
-                continue
-            out.append(r)
-        return out
+    def _push_status_to_detail(self) -> None:
+        m = self.detail.machine
+        if not m:
+            return
+        n = m.name
+        self.detail.set_status(done=n in self._completed_names, downloading=n in self._downloading,
+                               downloaded=n in self._downloaded, running=n in self._running)
 
-    def _apply_filters(self) -> None:
-        self._render()
+    def _on_current_changed(self, current, _previous) -> None:
+        if self.detail.isVisible():
+            self._open_detail_for_current()
 
-    # ---- Acciones / context menu ----
+    def _open_detail_for_current(self, force: bool = False) -> None:
+        idx = self.table.currentIndex()
+        m = self.proxy.machine_at(idx)
+        if m and (force or self.detail.isVisible()):
+            self.show_detail(m.name)
 
-    def _row_at(self, pos: QPoint) -> Optional[Dict[str, str]]:
-        index = self.table.indexAt(pos)
-        if not index.isValid():
-            return None
-        row = index.row()
-        name_item = self.table.item(row, 2)
-        if name_item is None:
-            return None
-        name = name_item.text()
-        for r in self._all_rows:
-            if r.get("nombre", "") == name:
-                return r
-        return None
+    def _machine_at(self, pos: QPoint):
+        return self.proxy.machine_at(self.table.indexAt(pos))
 
     def _show_context_menu(self, pos: QPoint) -> None:
-        row = self._row_at(pos)
-        if not row:
+        m = self._machine_at(pos)
+        if not m:
             return
-        name = row.get("nombre", "")
-        url = row.get("link_descarga", "")
+        name, url = m.name, m.download_url
         done = name in self._completed_names
         downloading = name in self._downloading
         downloaded = name in self._downloaded
@@ -541,34 +782,38 @@ class MachinesPage(QWidget):
         menu = QMenu(self)
         menu.setStyleSheet(
             f"QMenu {{ background: {BG_MID}; color: {FG_PRIMARY};"
-            f" border: 1px solid #2a2f3a; padding: 6px; border-radius: 8px; }}"
+            f" border: 1px solid {BORDER_SOFT}; padding: 6px; border-radius: 8px; }}"
             f"QMenu::item {{ padding: 8px 28px 8px 14px; border-radius: 6px; }}"
             f"QMenu::item:selected {{ background: {BG_LIGHT}; color: {ACCENT}; }}"
-            f"QMenu::separator {{ height: 1px; background: #2a2f3a; margin: 4px 8px; }}"
+            f"QMenu::separator {{ height: 1px; background: {BORDER_SOFT}; margin: 4px 8px; }}"
         )
-
-        # toggle completada
-        toggle_text = "Desmarcar como completada" if done else "Marcar como completada"
-        act_toggle = QAction(svg_icon("check" if not done else "circle",
-                                      ACCENT if not done else FG_MUTED, 16),
-                             toggle_text, self)
-        act_toggle.triggered.connect(lambda: self.request_toggle_completed.emit(name))
-        menu.addAction(act_toggle)
-
+        act_detail = QAction(svg_icon("info", FG_PRIMARY, 16), "Ver detalle", self)
+        act_detail.triggered.connect(lambda: self.show_detail(name))
+        menu.addAction(act_detail)
         menu.addSeparator()
 
-        # descargar / cancelar
+        toggle_text = "Desmarcar como completada" if done else "Marcar como completada"
+        act_toggle = QAction(svg_icon("check" if not done else "circle",
+                                      ACCENT if not done else FG_MUTED, 16), toggle_text, self)
+        act_toggle.triggered.connect(lambda: self.request_toggle_completed.emit(name))
+        menu.addAction(act_toggle)
+        menu.addSeparator()
+
         if downloading:
             act_dl = QAction(svg_icon("trash", DANGER, 16), "Cancelar descarga", self)
             act_dl.triggered.connect(lambda: self.request_cancel_download.emit(name))
             menu.addAction(act_dl)
         elif downloaded:
-            act_dl = QAction(svg_icon("folder", SUCCESS, 16),
-                             "Ya descargada (ver en Descargas)", self)
+            running = name in self._running
+            act_launch = QAction(svg_icon("docker", SUCCESS if not running else FG_MUTED, 16),
+                                 "Ver en Laboratorio" if running else "Lanzar laboratorio (Docker)", self)
+            act_launch.triggered.connect(lambda: self.request_launch.emit(name))
+            menu.addAction(act_launch)
+            act_dl = QAction(svg_icon("folder", FG_MUTED, 16), "Ya descargada", self)
             act_dl.setEnabled(False)
             menu.addAction(act_dl)
         else:
-            act_dl = QAction(svg_icon("download", ACCENT, 16), "Descargar desde MEGA", self)
+            act_dl = QAction(svg_icon("download", ACCENT, 16), "Descargar", self)
             if not url:
                 act_dl.setEnabled(False)
                 act_dl.setText("Sin enlace de descarga")
@@ -593,7 +838,7 @@ class DownloadItemWidget(QFrame):
         self.setProperty("class", "card")
         self.setObjectName("downloadItem")
         self.setStyleSheet(
-            f"QFrame#downloadItem {{ background: {BG_MID}; border: 1px solid #2a2f3a;"
+            f"QFrame#downloadItem {{ background: {BG_MID}; border: 1px solid {BORDER_SOFT};"
             f" border-radius: 12px; }}"
         )
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -653,7 +898,6 @@ class DownloadItemWidget(QFrame):
             self.remove_clicked.emit(self.machine)
 
     def update_state(self, state) -> None:
-        from download_manager import human_size, human_eta
         self._state_text = state.state
         self.bar.setValue(int(state.percent))
         self.lbl_state.setText({
@@ -697,6 +941,7 @@ class DownloadsPage(QWidget):
     request_cancel = pyqtSignal(str)
     request_remove = pyqtSignal(str)
     request_open = pyqtSignal(str)
+    request_clear_finished = pyqtSignal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -706,26 +951,49 @@ class DownloadsPage(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
         root.addWidget(page_header("Descargas",
-                                   "Máquinas que se están descargando o ya tienes en local"))
+                                   "Máquinas que se están descargando desde DockerLabs"))
 
         body = QVBoxLayout()
         body.setContentsMargins(24, 16, 24, 24)
         body.setSpacing(10)
 
+        top = QHBoxLayout()
+        top.setSpacing(10)
         self.lbl_summary = QLabel("Sin descargas")
         self.lbl_summary.setStyleSheet(f"color: {FG_MUTED};")
-        body.addWidget(self.lbl_summary)
+        self.btn_clear = QPushButton("  Limpiar terminadas")
+        self.btn_clear.setProperty("class", "ghost")
+        self.btn_clear.setIcon(svg_icon("trash", FG_SECONDARY, 15))
+        self.btn_clear.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_clear.setToolTip("Quita de la lista las descargas completadas, fallidas o canceladas")
+        self.btn_clear.setEnabled(False)
+        self.btn_clear.clicked.connect(self.request_clear_finished.emit)
+        top.addWidget(self.lbl_summary)
+        top.addStretch(1)
+        top.addWidget(self.btn_clear)
+        body.addLayout(top)
 
-        # contenedor de items
-        self.list_host = QFrame()
+        # contenedor de items dentro de un scroll (muchas descargas no deben desbordar la vista)
+        from PyQt6.QtWidgets import QScrollArea
+
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll.setStyleSheet("QScrollArea { background: transparent; }")
+        self.list_host = QWidget()
+        self.list_host.setObjectName("downloadsHost")
+        self.list_host.setStyleSheet("QWidget#downloadsHost { background: transparent; }")
         self.list_layout = QVBoxLayout(self.list_host)
-        self.list_layout.setContentsMargins(0, 0, 0, 0)
+        self.list_layout.setContentsMargins(0, 0, 6, 0)
         self.list_layout.setSpacing(10)
-        body.addWidget(self.list_host, 1)
+        self.list_layout.addStretch(1)
+        self.scroll.setWidget(self.list_host)
+        body.addWidget(self.scroll, 1)
 
         self.empty = QLabel(
             "Aún no hay descargas. Ve a Máquinas, haz clic derecho sobre una y elige\n"
-            "“Descargar desde MEGA”. Aparecerá aquí con su barra de progreso."
+            "“Descargar”. Aparecerá aquí con su barra de progreso."
         )
         self.empty.setWordWrap(True)
         self.empty.setStyleSheet(f"color: {FG_MUTED}; font-size: 13px; padding: 24px 0;")
@@ -753,14 +1021,17 @@ class DownloadsPage(QWidget):
                 w.open_clicked.connect(self.request_open.emit)
                 w.remove_clicked.connect(self.request_remove.emit)
                 self._widgets[state.machine] = w
-                self.list_layout.addWidget(w)
+                self.list_layout.insertWidget(self.list_layout.count() - 1, w)   # antes del stretch
             w.update_state(state)
 
         n = len(states)
         active = sum(1 for s in states if s.state in ("running", "verifying", "queued"))
         done = sum(1 for s in states if s.state == "done")
+        finished = n - active
         self.empty.setVisible(n == 0)
-        self.list_host.setVisible(n > 0)
+        self.scroll.setVisible(n > 0)
+        self.btn_clear.setEnabled(finished > 0)
+        self.btn_clear.setText(f"  Limpiar terminadas ({finished})" if finished else "  Limpiar terminadas")
         if n == 0:
             self.lbl_summary.setText("Sin descargas")
         else:
@@ -774,10 +1045,18 @@ class DownloadsPage(QWidget):
 # ============================================================
 
 class CompletedPage(QWidget):
+    """Máquinas completadas: búsqueda, agrupación por dificultad y desmarcar."""
+
     request_refresh = pyqtSignal()
+    request_toggle_completed = pyqtSignal(str)
+    request_open_machine = pyqtSignal(str)
+
+    ROLE_NAME = Qt.ItemDataRole.UserRole + 1
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
+        self._names: list = []
+        self._catalog = None
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
@@ -789,12 +1068,24 @@ class CompletedPage(QWidget):
         body.setSpacing(12)
 
         top = QHBoxLayout()
+        top.setSpacing(10)
         self.lbl = QLabel("Inicia sesión para sincronizar.")
         self.lbl.setStyleSheet(f"color: {FG_SECONDARY};")
         top.addWidget(self.lbl, 1)
-        self.btn_refresh = QPushButton("Sincronizar")
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Buscar…")
+        self.search.setClearButtonEnabled(True)
+        self.search.setFixedWidth(220)
+        self.search.textChanged.connect(self._rebuild)
+        top.addWidget(self.search)
+        self.chk_group = QCheckBox("Agrupar por dificultad")
+        self.chk_group.setChecked(True)
+        self.chk_group.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self.chk_group.toggled.connect(self._rebuild)
+        top.addWidget(self.chk_group)
+        self.btn_refresh = QPushButton("  Sincronizar")
         self.btn_refresh.setProperty("class", "primary")
-        self.btn_refresh.setIcon(svg_icon("refresh", "#0b1316", 16))
+        self.btn_refresh.setIcon(svg_icon("refresh", ON_ACCENT, 16))
         self.btn_refresh.setMinimumHeight(34)
         self.btn_refresh.clicked.connect(self.request_refresh.emit)
         top.addWidget(self.btn_refresh)
@@ -802,31 +1093,120 @@ class CompletedPage(QWidget):
 
         self.list_widget = QListWidget()
         self.list_widget.setStyleSheet(
-            f"QListWidget {{ background: {BG_MID}; border: 1px solid #2a2f3a;"
+            f"QListWidget {{ background: {BG_MID}; border: 1px solid {BORDER_SOFT};"
             f" border-radius: 12px; padding: 8px; color: {FG_PRIMARY}; }}"
-            f"QListWidget::item {{ padding: 8px 12px; border: none; }}"
+            f"QListWidget::item {{ padding: 8px 12px; border: none; border-radius: 6px; }}"
+            f"QListWidget::item:selected {{ background: {BG_LIGHT}; }}"
         )
+        self.list_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.list_widget.customContextMenuRequested.connect(self._context_menu)
+        self.list_widget.itemDoubleClicked.connect(self._on_double_click)
         body.addWidget(self.list_widget, 1)
+
+        hint = QLabel("Doble clic abre la máquina en el catálogo · clic derecho para desmarcar.")
+        hint.setStyleSheet(f"color: {FG_MUTED}; font-size: 11px;")
+        body.addWidget(hint)
 
         wrap = QFrame(); wrap.setLayout(body)
         root.addWidget(wrap, 1)
 
+    # ------------------------------------------------------------------ API
+    def set_catalog(self, catalog) -> None:
+        self._catalog = catalog
+        self._rebuild()
+
     def set_items(self, names) -> None:
+        self._names = sorted(set(names or []), key=str.lower)
+        self._rebuild()
+
+    @property
+    def names(self) -> list:
+        return list(self._names)
+
+    # ------------------------------------------------------------------ interno
+    def _difficulty(self, name: str) -> str:
+        if self._catalog is None:
+            return ""
+        m = self._catalog.by_name().get(name)
+        return m.difficulty if m else ""
+
+    def _rebuild(self) -> None:
         self.list_widget.clear()
-        names = list(names)
-        if not names:
-            it = QListWidgetItem("Sin máquinas completadas")
-            it.setForeground(QColor(FG_MUTED))
-            it.setFlags(Qt.ItemFlag.NoItemFlags)
-            self.list_widget.addItem(it)
+        q = self.search.text().strip().lower()
+        names = [n for n in self._names if q in n.lower()]
+        total = len(self._names)
+        if total == 0:
+            self._add_placeholder("Sin máquinas completadas")
             self.lbl.setText("0 máquinas completadas")
             return
-        for n in sorted(names, key=str.lower):
-            it = QListWidgetItem(f"  {n}")
-            it.setIcon(svg_icon("check", ACCENT, 16))
-            it.setForeground(QColor(FG_PRIMARY))
-            self.list_widget.addItem(it)
-        self.lbl.setText(f"{len(names)} máquinas completadas")
+        self.lbl.setText(f"{total} máquinas completadas" + (f" · {len(names)} coinciden" if q else ""))
+        if not names:
+            self._add_placeholder(f"Ninguna completada coincide con «{self.search.text().strip()}»")
+            return
+        group = self.chk_group.isChecked() and self._catalog is not None
+        if not group:
+            for n in names:
+                self._add_machine(n)
+            return
+        from catalog import DIFFICULTY_ORDER
+
+        buckets: Dict[str, list] = {d: [] for d in DIFFICULTY_ORDER}
+        buckets[""] = []
+        for n in names:
+            buckets.setdefault(self._difficulty(n), []).append(n)
+        for d in list(DIFFICULTY_ORDER) + [""]:
+            items = buckets.get(d) or []
+            if not items:
+                continue
+            self._add_group_header(d or "Sin clasificar", len(items), difficulty_color(d) if d else FG_MUTED)
+            for n in items:
+                self._add_machine(n, indent=True)
+
+    def _add_placeholder(self, text: str) -> None:
+        it = QListWidgetItem(text)
+        it.setForeground(QColor(FG_MUTED))
+        it.setFlags(Qt.ItemFlag.NoItemFlags)
+        self.list_widget.addItem(it)
+
+    def _add_group_header(self, title: str, count: int, color: str) -> None:
+        it = QListWidgetItem(f"{title}  ·  {count}")
+        it.setForeground(QColor(color))
+        f = it.font(); f.setBold(True); it.setFont(f)
+        it.setFlags(Qt.ItemFlag.NoItemFlags)
+        self.list_widget.addItem(it)
+
+    def _add_machine(self, name: str, indent: bool = False) -> None:
+        it = QListWidgetItem(("      " if indent else "  ") + name)
+        it.setIcon(svg_icon("check", ACCENT, 16))
+        it.setForeground(QColor(FG_PRIMARY))
+        it.setData(self.ROLE_NAME, name)
+        d = self._difficulty(name)
+        if d:
+            it.setToolTip(f"{name} · {d}")
+        self.list_widget.addItem(it)
+
+    def _item_name(self, item) -> str:
+        return str(item.data(self.ROLE_NAME) or "") if item is not None else ""
+
+    def _on_double_click(self, item) -> None:
+        n = self._item_name(item)
+        if n:
+            self.request_open_machine.emit(n)
+
+    def _context_menu(self, pos: QPoint) -> None:
+        item = self.list_widget.itemAt(pos)
+        n = self._item_name(item)
+        if not n:
+            return
+        menu = QMenu(self)
+        act_open = QAction(svg_icon("machines", FG_PRIMARY, 14), "Ver en el catálogo", menu)
+        act_open.triggered.connect(lambda: self.request_open_machine.emit(n))
+        act_undo = QAction(svg_icon("x", DANGER, 14), "Desmarcar como completada", menu)
+        act_undo.triggered.connect(lambda: self.request_toggle_completed.emit(n))
+        menu.addAction(act_open)
+        menu.addSeparator()
+        menu.addAction(act_undo)
+        menu.exec(self.list_widget.viewport().mapToGlobal(pos))
 
 
 # ============================================================
@@ -858,7 +1238,7 @@ class SessionPage(QWidget):
         self.login_card = QFrame()
         self.login_card.setObjectName("loginCard")
         self.login_card.setStyleSheet(
-            f"QFrame#loginCard {{ background: {BG_MID}; border: 1px solid #2a2f3a;"
+            f"QFrame#loginCard {{ background: {BG_MID}; border: 1px solid {BORDER_SOFT};"
             f" border-radius: 12px; }}"
         )
         cl = QGridLayout(self.login_card)
@@ -874,7 +1254,7 @@ class SessionPage(QWidget):
 
         self.btn_login = QPushButton("Iniciar sesión")
         self.btn_login.setProperty("class", "primary")
-        self.btn_login.setIcon(svg_icon("session", "#0b1316", 16))
+        self.btn_login.setIcon(svg_icon("session", ON_ACCENT, 16))
         self.btn_login.setMinimumHeight(40)
         self.btn_login.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_login.clicked.connect(self._emit_login)
@@ -897,7 +1277,7 @@ class SessionPage(QWidget):
         self.profile_card = QFrame()
         self.profile_card.setObjectName("profileCard")
         self.profile_card.setStyleSheet(
-            f"QFrame#profileCard {{ background: {BG_MID}; border: 1px solid #2a2f3a;"
+            f"QFrame#profileCard {{ background: {BG_MID}; border: 1px solid {BORDER_SOFT};"
             f" border-radius: 12px; }}"
         )
         pl = QVBoxLayout(self.profile_card)
@@ -938,7 +1318,7 @@ class SessionPage(QWidget):
         btn_row = QHBoxLayout()
         btn_row.addStretch(1)
         self.btn_logout = QPushButton("  Cerrar sesión")
-        self.btn_logout.setIcon(svg_icon("logout", "#0b1316", 16))
+        self.btn_logout.setIcon(svg_icon("logout", ON_ACCENT, 16))
         self.btn_logout.setProperty("class", "primary")
         self.btn_logout.setMinimumHeight(40)
         self.btn_logout.setMinimumWidth(180)
@@ -1015,6 +1395,21 @@ class SettingsPage(QWidget):
     request_set_os_notifications = pyqtSignal(bool)
     request_set_in_app_notifications = pyqtSignal(bool)
     request_open_downloads_dir = pyqtSignal()
+    request_set_docker_network = pyqtSignal(str)
+    request_set_max_concurrent = pyqtSignal(int)
+    request_set_theme = pyqtSignal(str)
+
+    THEME_OPTIONS = [
+        ("dark", "Oscuro (por defecto)"),
+        ("light", "Claro"),
+    ]
+
+    DOCKER_NET_OPTIONS = [
+        ("auto", "Automático (recomendado)"),
+        ("bridge", "Bridge: IP interna del contenedor (Linux nativo)"),
+        ("bridge+ports", "Publicar puertos EXPOSE en 127.0.0.1 (Docker Desktop)"),
+        ("host", "Red del host (solo Linux)"),
+    ]
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -1033,7 +1428,7 @@ class SettingsPage(QWidget):
         card_dir = self._make_card("Carpeta de descargas")
         cdl = card_dir.layout()
         sub_dir = QLabel(
-            "Aquí se guardan las máquinas descargadas desde MEGA. El CSV del catálogo"
+            "Aquí se guardan los .zip de las máquinas descargadas. El catálogo"
             " se gestiona internamente y no es configurable."
         )
         sub_dir.setStyleSheet(f"color: {FG_MUTED}; font-size: 12px;")
@@ -1047,14 +1442,14 @@ class SettingsPage(QWidget):
         self.in_dir.setMinimumHeight(36)
         self.in_dir.setObjectName("dirInput")
         self.in_dir.setStyleSheet(
-            f"QLineEdit#dirInput {{ background: {BG_LIGHT}; border: 1px solid #2a2f3a;"
+            f"QLineEdit#dirInput {{ background: {BG_LIGHT}; border: 1px solid {BORDER_SOFT};"
             f" border-radius: 8px; padding: 8px 10px; color: {FG_PRIMARY}; }}"
         )
         row_dir.addWidget(self.in_dir, 1)
 
         self.btn_browse = QPushButton("Cambiar…")
         self.btn_browse.setProperty("class", "primary")
-        self.btn_browse.setIcon(svg_icon("folder", "#0b1316", 16))
+        self.btn_browse.setIcon(svg_icon("folder", ON_ACCENT, 16))
         self.btn_browse.setMinimumHeight(36)
         self.btn_browse.clicked.connect(self._on_browse)
         row_dir.addWidget(self.btn_browse)
@@ -1066,6 +1461,31 @@ class SettingsPage(QWidget):
         self.btn_open.clicked.connect(self.request_open_downloads_dir.emit)
         row_dir.addWidget(self.btn_open)
         cdl.addLayout(row_dir)
+
+        row_conc = QHBoxLayout()
+        row_conc.setSpacing(10)
+        lbl_conc = QLabel("Descargas simultáneas")
+        lbl_conc.setStyleSheet(f"color: {FG_PRIMARY}; font-size: 12px;")
+        self.spin_concurrent = QSpinBox()
+        self.spin_concurrent.setRange(1, 6)
+        self.spin_concurrent.setValue(2)
+        self.spin_concurrent.setFixedWidth(84)
+        self.spin_concurrent.setButtonSymbols(QSpinBox.ButtonSymbols.PlusMinus)
+        self.spin_concurrent.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.spin_concurrent.setMinimumHeight(32)
+        self.spin_concurrent.setToolTip("Número máximo de máquinas descargándose a la vez; el resto espera en cola")
+        self.spin_concurrent.valueChanged.connect(self.request_set_max_concurrent.emit)
+        hint_conc = QLabel(
+            "El servidor de DockerLabs limita cada conexión a ~0,5 MB/s y no admite descargas por "
+            "partes, así que una máquina no puede ir más rápido; sí puedes bajar varias a la vez. "
+            "Con muchas conexiones a veces devuelve errores 500 (se reintenta solo)."
+        )
+        hint_conc.setStyleSheet(f"color: {FG_MUTED}; font-size: 11px;")
+        hint_conc.setWordWrap(True)
+        row_conc.addWidget(lbl_conc)
+        row_conc.addWidget(self.spin_concurrent)
+        row_conc.addWidget(hint_conc, 1)
+        cdl.addLayout(row_conc)
         body.addWidget(card_dir)
 
         # ---------- Notificaciones ----------
@@ -1090,14 +1510,57 @@ class SettingsPage(QWidget):
         cnl.addWidget(self.lbl_backend)
         body.addWidget(card_notif)
 
+        # ---------- Docker ----------
+        card_docker = self._make_card("Laboratorio (Docker)")
+        cdk = card_docker.layout()
+        sub_dk = QLabel(
+            "Cómo se expone la máquina al lanzarla. En Linux con Docker Engine la IP del "
+            "contenedor es accesible directamente; en Docker Desktop (Windows/macOS) no, así "
+            "que se publican los puertos EXPOSE en localhost."
+        )
+        sub_dk.setStyleSheet(f"color: {FG_MUTED}; font-size: 12px;")
+        sub_dk.setWordWrap(True)
+        cdk.addWidget(sub_dk)
+        self.combo_docker_net = ghost_combo(self.DOCKER_NET_OPTIONS, min_width=320, height=36)
+        self.combo_docker_net.setStyleSheet(
+            f"QComboBox {{ background: {BG_LIGHT}; border: 1px solid {BORDER_SOFT}; }}")
+        self.combo_docker_net.currentIndexChanged.connect(
+            lambda _i: self.request_set_docker_network.emit(self.combo_docker_net.currentData() or "auto")
+        )
+        cdk.addWidget(self.combo_docker_net)
+        body.addWidget(card_docker)
+
+        # ---------- Apariencia ----------
+        card_theme = self._make_card("Apariencia")
+        ctl = card_theme.layout()
+        row_theme = QHBoxLayout()
+        row_theme.setSpacing(10)
+        lbl_theme = QLabel("Tema")
+        lbl_theme.setStyleSheet(f"color: {FG_PRIMARY}; font-size: 12px;")
+        self.combo_theme = ghost_combo(self.THEME_OPTIONS, min_width=220, height=36)
+        self.combo_theme.currentIndexChanged.connect(
+            lambda _i: self.request_set_theme.emit(self.combo_theme.currentData() or "dark")
+        )
+        self.lbl_theme_hint = QLabel(
+            "El cambio se aplica al instante a la mayoría de la interfaz; "
+            "algunos paneles ya abiertos se repintan por completo al reiniciar."
+        )
+        self.lbl_theme_hint.setStyleSheet(f"color: {FG_MUTED}; font-size: 11px;")
+        self.lbl_theme_hint.setWordWrap(True)
+        row_theme.addWidget(lbl_theme)
+        row_theme.addWidget(self.combo_theme)
+        row_theme.addWidget(self.lbl_theme_hint, 1)
+        ctl.addLayout(row_theme)
+        body.addWidget(card_theme)
+
         # ---------- Info técnica ----------
         card_info = self._make_card("Información")
         cil = card_info.layout()
         info = QLabel(
-            "• Datos cacheados en: ~/.dockerlabs-gui/\n"
-            "• El catálogo se actualiza automáticamente al arrancar si hay internet.\n"
-            "• Si no hay conexión, se carga el último CSV disponible.\n"
-            "• La sesión vive sólo en memoria del proceso."
+            "• Datos cacheados en: ~/.dockerlabs-gui/ (catálogo, ajustes, logs).\n"
+            "• El catálogo se actualiza automáticamente al arrancar si hay internet (F5 para forzar).\n"
+            "• Si no hay conexión, se carga el último catálogo guardado (catalog.json).\n"
+            "• Los labs se extraen en ~/.dockerlabs-gui/labs/<máquina>/ y los contenedores se llaman dockerlabs_<máquina>."
         )
         info.setStyleSheet(f"color: {FG_SECONDARY}; font-size: 12px;")
         info.setWordWrap(True)
@@ -1105,14 +1568,22 @@ class SettingsPage(QWidget):
         body.addWidget(card_info)
 
         body.addItem(QSpacerItem(0, 0, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding))
-        wrap = QFrame(); wrap.setLayout(body)
-        root.addWidget(wrap, 1)
+        wrap = QFrame(); wrap.setObjectName("settingsBody"); wrap.setLayout(body)
+        from PyQt6.QtWidgets import QScrollArea
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setStyleSheet("QScrollArea { background: transparent; }"
+                             " QScrollArea > QWidget > QWidget#settingsBody { background: transparent; }")
+        scroll.setWidget(wrap)
+        root.addWidget(scroll, 1)
 
     def _make_card(self, title: str) -> QFrame:
         card = QFrame()
         card.setObjectName("settingsCard")
         card.setStyleSheet(
-            f"QFrame#settingsCard {{ background: {BG_MID}; border: 1px solid #2a2f3a;"
+            f"QFrame#settingsCard {{ background: {BG_MID}; border: 1px solid {BORDER_SOFT};"
             f" border-radius: 12px; }}"
         )
         lay = QVBoxLayout(card)
@@ -1126,8 +1597,21 @@ class SettingsPage(QWidget):
     # ---- API ----
 
     def set_state(self, downloads_dir: str, os_notifications: bool,
-                  in_app_notifications: bool, os_backend_available: bool) -> None:
+                  in_app_notifications: bool, os_backend_available: bool,
+                  docker_network: str = "auto", max_concurrent: int = 2,
+                  theme: str = "dark") -> None:
         self._current_dir = downloads_dir
+        self.combo_theme.blockSignals(True)
+        t_idx = self.combo_theme.findData(theme or "dark")
+        self.combo_theme.setCurrentIndex(max(0, t_idx))
+        self.combo_theme.blockSignals(False)
+        self.spin_concurrent.blockSignals(True)
+        self.spin_concurrent.setValue(max(1, min(6, int(max_concurrent or 2))))
+        self.spin_concurrent.blockSignals(False)
+        self.combo_docker_net.blockSignals(True)
+        idx = self.combo_docker_net.findData(docker_network or "auto")
+        self.combo_docker_net.setCurrentIndex(max(0, idx))
+        self.combo_docker_net.blockSignals(False)
         self._os_backend_available = os_backend_available
         self.in_dir.setText(downloads_dir)
         self.in_dir.setToolTip(downloads_dir)
@@ -1178,11 +1662,11 @@ class AboutPage(QWidget):
         body.setSpacing(10)
         info = QLabel(
             "DockerLabs GUI · cliente de escritorio no oficial para dockerlabs.es\n"
-            "Stack: PyQt6, urllib (stdlib), requests, pycryptodome.\n\n"
+            "Stack: PyQt6, urllib (stdlib), requests.\n\n"
             "Construido sobre la API pública /api, los endpoints internos del\n"
             "frontend (toggle_completed_machine, completed_machines, author_profile)\n"
-            "y un cliente propio para descargar archivos públicos de MEGA con\n"
-            "verificación de integridad CBC-MAC."
+            "y descargas HTTP directas desde gestion-maquinas.dockerlabs.es\n"
+            "con reintentos y verificación del zip."
         )
         info.setStyleSheet(f"color: {FG_SECONDARY};")
         info.setWordWrap(True)

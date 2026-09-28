@@ -1,0 +1,73 @@
+name: Release
+
+# Construye ejecutables con PyInstaller para Linux / Windows / macOS y los publica
+# como assets de un GitHub Release (no se usa caché ni artefactos persistentes:
+# todo lo que se conserva vive en el release).
+# Ejecución SOLO manual: Actions → Release → Run workflow (indicar el tag).
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag del release (p.ej. v1.0.0). Si no existe se crea como prerelease."
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset: dockerlabs-gui-linux-x86_64
+          - os: windows-latest
+            asset: dockerlabs-gui-windows-x86_64
+          - os: macos-latest
+            asset: dockerlabs-gui-macos-arm64
+    env:
+      TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Linux Qt runtime libs
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libegl1 libgl1 libxkbcommon0 libdbus-1-3 \
+            libfontconfig1 libglib2.0-0 libxcb-cursor0
+      - run: pip install -r requirements.txt pyinstaller
+      - name: Build (PyInstaller)
+        shell: bash
+        run: |
+          python packaging/build.py --name "${{ matrix.asset }}"
+          ls -la dist
+      - name: Package
+        shell: bash
+        run: |
+          cd dist
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            7z a -tzip "../${{ matrix.asset }}.zip" "${{ matrix.asset }}"
+          else
+            tar -czf "../${{ matrix.asset }}.tar.gz" "${{ matrix.asset }}"
+          fi
+          cd ..
+          ls -la *.zip *.tar.gz 2>/dev/null || true
+      - name: Ensure release exists
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$TAG" >/dev/null 2>&1 || \
+            gh release create "$TAG" --title "DockerLabs GUI $TAG" --generate-notes --prerelease
+      - name: Upload asset
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$TAG" ${{ matrix.asset }}.* --clobber

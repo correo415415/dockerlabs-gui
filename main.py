@@ -5,11 +5,11 @@ Cambios v0.5:
 - Notificaciones del SO opcionales (winotify/notify-send/osascript/plyer).
 - Página Ajustes funcional: cambiar carpeta de descargas + toggles.
 - Combos de filtros disimulados.
-- Descargador MEGA paralelo (Range requests concurrentes).
+- Descargas HTTP directas desde gestion-maquinas.dockerlabs.es (con reintentos).
 """
 from __future__ import annotations
 
-import json
+import logging
 import os
 import platform
 import subprocess
@@ -17,189 +17,65 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from PyQt6.QtCore import QObject, QThread, Qt, QUrl, pyqtSignal
-from PyQt6.QtGui import QCloseEvent, QDesktopServices
+from PyQt6.QtCore import QUrl
+from PyQt6.QtGui import QCloseEvent, QDesktopServices, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QApplication,
     QHBoxLayout,
     QMainWindow,
+    QMessageBox,
     QStackedWidget,
     QWidget,
 )
 
-from dockerlabs_api import (
-    AuthResult,
-    DockerLabsError,
-    build_session_payload,
-    load_env,
-    save_env,
-)
-from dockerlabs_api_ext import DockerLabsExtClient
-from completed_store import CompletedStore
+import theme as _theme
+from app_logging import install_excepthook, setup_logging
+from catalog_controller import CatalogController
 from download_manager import DownloadManager
+from lab_controller import LabController
 from notifier import notify_os, os_backend_available
+from session_controller import SessionController
 from settings_store import SettingsStore, UserSettings
-from theme import QSS
+from theme import DEFAULT_THEME, THEMES, apply_theme
 from widgets.icons import icon as svg_icon
+from widgets.lab_page import LabPage
 from widgets.pages import (
     AboutPage,
     CompletedPage,
     DashboardPage,
     DownloadsPage,
-    ExportWorker,
     MachinesPage,
     SessionPage,
     SettingsPage,
 )
 from widgets.sidebar import Sidebar
 from widgets.toast import ToastManager
+from workers import WorkerPool
+
+logger = logging.getLogger(__name__)
 
 
 APP_DIR = Path.home() / ".dockerlabs-gui"
 APP_DIR.mkdir(parents=True, exist_ok=True)
-CSV_DIR = APP_DIR / "csv"
-CSV_DIR.mkdir(parents=True, exist_ok=True)
+CATALOG_FILE = APP_DIR / "catalog.json"
 DEFAULT_DOWNLOADS_DIR = APP_DIR / "downloads"
 DEFAULT_DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
+LABS_DIR = APP_DIR / "labs"
 SETTINGS_FILE = APP_DIR / "settings.json"
-DEFAULT_CSV = CSV_DIR / "dockerlabs_maquinas.csv"
 ENV_FILE = APP_DIR / ".env"
 COMPLETED_FILE = APP_DIR / "completed.json"
-
-# Compat con la versión anterior
-LEGACY_CSV = Path.home() / ".dockerlabs-qt" / "csv" / "dockerlabs_maquinas.csv"
 
 
 # -----------------------------------------------------------------------------
 # Workers
 # -----------------------------------------------------------------------------
 
-class LoginWorker(QThread):
-    success = pyqtSignal(str, str)
-    failed = pyqtSignal(str)
-
-    def __init__(self, client: DockerLabsExtClient, user: str, pwd: str, parent=None) -> None:
-        super().__init__(parent)
-        self.client = client; self.user = user; self.pwd = pwd
-
-    def run(self) -> None:
-        try:
-            res = self.client.login(self.user, self.pwd)
-            if not res.success:
-                self.failed.emit(res.message or "Login rechazado"); return
-            profile = self.client.author_profile(self.user)
-            self.success.emit(self.user, profile.get("profile_image_url", "") or "")
-        except DockerLabsError as exc:
-            self.failed.emit(str(exc))
-        except Exception as exc:  # noqa: BLE001
-            self.failed.emit(f"Error: {exc}")
-
-
-class CompletedWorker(QThread):
-    done = pyqtSignal(list)
-    failed = pyqtSignal(str)
-
-    def __init__(self, client: DockerLabsExtClient, parent=None) -> None:
-        super().__init__(parent)
-        self.client = client
-
-    def run(self) -> None:
-        try:
-            self.done.emit(self.client.completed_machines_from_home())
-        except Exception as exc:  # noqa: BLE001
-            self.failed.emit(str(exc))
-
-
-class ToggleWorker(QThread):
-    done = pyqtSignal(str, bool)
-    failed = pyqtSignal(str, str)
-
-    def __init__(self, client: DockerLabsExtClient, name: str, parent=None) -> None:
-        super().__init__(parent)
-        self.client = client; self.name = name
-
-    def run(self) -> None:
-        try:
-            self.done.emit(self.name, self.client.toggle_completed(self.name))
-        except Exception as exc:  # noqa: BLE001
-            self.failed.emit(self.name, str(exc))
-
-
-class SessionRestoreWorker(QThread):
-    """Intenta reutilizar la cookie guardada en .env para auto-loguear."""
-    success = pyqtSignal(str, str)       # username, profile_image_url
-    failed = pyqtSignal(str)
-
-    def __init__(self, client: DockerLabsExtClient, env_path: Path, parent=None) -> None:
-        super().__init__(parent)
-        self.client = client
-        self.env_path = env_path
-
-    def run(self) -> None:
-        try:
-            env = load_env(self.env_path)
-            cookie = env.get("DOCKERLABS_SESSION") or ""
-            csrf = env.get("DOCKERLABS_CSRF") or ""
-            user_hint = env.get("DOCKERLABS_USERNAME") or ""
-            if not cookie:
-                self.failed.emit("no-cookie"); return
-            self.client.inject_session_cookie(cookie)
-            if csrf:
-                self.client._csrf_token = csrf  # noqa: SLF001
-            if not self.client.is_session_valid():
-                self.failed.emit("expired"); return
-            user = self.client.current_user_from_home() or user_hint
-            if not user:
-                self.failed.emit("no-user"); return
-            # Refrescamos el CSRF actual desde la home autenticada para que
-            # las acciones de toggle funcionen.
-            try:
-                self.client.fetch_root_csrf()
-            except Exception:  # noqa: BLE001
-                pass
-            profile_url = ""
-            try:
-                profile = self.client.author_profile(user)
-                profile_url = profile.get("profile_image_url", "") or ""
-            except Exception:  # noqa: BLE001
-                pass
-            self.success.emit(user, profile_url)
-        except Exception as exc:  # noqa: BLE001
-            self.failed.emit(str(exc))
-
-
-class SyncCompletedWorker(QThread):
-    """Combina las completadas locales con las del servidor.
-
-    1. Lee las completadas del servidor.
-    2. Las locales que no estaban en el servidor se envían con toggle.
-    3. Emite el set final unificado.
-    """
-    done = pyqtSignal(list, list)   # final_list, newly_pushed
-    failed = pyqtSignal(str)
-
-    def __init__(self, client: DockerLabsExtClient, local: set[str], parent=None) -> None:
-        super().__init__(parent)
-        self.client = client
-        self.local = set(local)
-
-    def run(self) -> None:
-        try:
-            server = set(self.client.completed_machines_from_home())
-            to_push = sorted(self.local - server)
-            pushed: list[str] = []
-            for name in to_push:
-                try:
-                    new_state = self.client.toggle_completed(name)
-                    if new_state:
-                        pushed.append(name)
-                except Exception:  # noqa: BLE001
-                    # Si una falla, seguimos con las demás
-                    continue
-            final = sorted(server | set(pushed))
-            self.done.emit(final, pushed)
-        except Exception as exc:  # noqa: BLE001
-            self.failed.emit(str(exc))
+def _load_theme_pref() -> str:
+    """Lee el tema guardado antes de crear la ventana (para no parpadear)."""
+    try:
+        return SettingsStore(SETTINGS_FILE).load().theme or DEFAULT_THEME
+    except Exception:  # noqa: BLE001
+        return DEFAULT_THEME
 
 
 # -----------------------------------------------------------------------------
@@ -211,7 +87,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("DockerLabs GUI")
         self.resize(1180, 760); self.setMinimumSize(960, 620)
-        self.setWindowIcon(svg_icon("machines", "#22d3ee", 64))
+        self.setWindowIcon(svg_icon("machines", _theme.ACCENT, 64))
 
         self.settings_store = SettingsStore(SETTINGS_FILE)
         self.settings: UserSettings = self.settings_store.load()
@@ -220,14 +96,17 @@ class MainWindow(QMainWindow):
             self.settings_store.save(self.settings)
         self._os_backend = os_backend_available()
 
-        self.client = DockerLabsExtClient()
-        self._username: Optional[str] = None
-        self._completed: set[str] = set()
-        self._workers: list[QThread] = []
-        self._completed_store = CompletedStore(COMPLETED_FILE)
-        # Cargamos las completadas anónimas como base inicial (se mostrarán
-        # incluso sin sesión y se fusionarán con las del servidor al loguear).
-        self._completed = self._completed_store.all_for_user(None)
+        self._workers = WorkerPool()
+        self._restart_requested = False
+        # Sesión + completadas viven en su controlador (sin UI). Arranca con
+        # las completadas anónimas locales como base.
+        self.session = SessionController(ENV_FILE, COMPLETED_FILE, parent=self)
+        self.session.logged_in.connect(self._on_logged_in)
+        self.session.logged_out.connect(self._on_logged_out)
+        self.session.completed_changed.connect(self._on_completed_changed)
+        self.session.status.connect(lambda msg: self.statusBar().showMessage(msg))
+        self.session.notify.connect(lambda t, b, k: self.notify(t, b, kind=k))
+        self.session.login_started.connect(self._on_login_started)
 
         # ---- layout ----
         root = QWidget(); root.setObjectName("rootWidget")
@@ -236,29 +115,45 @@ class MainWindow(QMainWindow):
         self.sidebar = Sidebar()
         self.sidebar.nav_changed.connect(self._go)
         self.sidebar.login_clicked.connect(self._open_session_page)
-        self.sidebar.logout_clicked.connect(self._do_logout)
+        self.sidebar.logout_clicked.connect(self.session.logout)
         # Tambien al hacer click en el avatar/pill
-        try:
-            self.sidebar.user_pill.mouseReleaseEvent = lambda _e: self._open_session_page()
-            self.sidebar.avatar.mouseReleaseEvent = lambda _e: self._open_session_page()
-        except Exception:  # noqa: BLE001
-            pass
+        self.sidebar.profile_clicked.connect(self._open_session_page)
         h.addWidget(self.sidebar)
 
         self.stack = QStackedWidget()
         h.addWidget(self.stack, 1)
 
         # download manager
-        self.downloads = DownloadManager(Path(self.settings.downloads_dir), parent=self)
+        self.downloads = DownloadManager(Path(self.settings.downloads_dir),
+                                         max_concurrent=self.settings.max_concurrent_downloads,
+                                         parent=self)
         self.downloads.state_changed.connect(self._on_dm_state)
         self.downloads.list_changed.connect(self._on_dm_list)
         self.downloads.download_completed.connect(self._on_dm_completed)
-        self.downloads.quota_exceeded.connect(self._on_dm_quota)
+        self.downloads.download_failed.connect(self._on_dm_failed)
+
+        # lab (Docker) controller
+        self.labs = LabController(LABS_DIR, network_preference=self.settings.docker_network,
+                                  parent=self)
+        self.labs.docker_info_changed.connect(self._on_docker_info)
+        self.labs.list_changed.connect(self._on_labs_list)
+        self.labs.lab_changed.connect(self._on_lab_changed)
+        self.labs.lab_started.connect(self._on_lab_started)
+        self.labs.lab_failed.connect(self._on_lab_failed)
+        self.labs.lab_action_done.connect(self._on_lab_action_done)
+        self.labs.elevation_started.connect(self._on_elevation_started)
+        self.labs.elevation_done.connect(self._on_elevation_done)
 
         # páginas
         self.page_dashboard = DashboardPage()
-        self.page_machines = MachinesPage(DEFAULT_CSV)
+        self.catalogs = CatalogController(
+            CATALOG_FILE, lambda: self.session.client.fetch_api_data(), parent=self)
+        self.catalogs.catalog_changed.connect(self._apply_catalog)
+        self.catalogs.loading.connect(self._on_catalog_loading)
+        self.catalogs.refresh_failed.connect(self._on_catalog_refresh_failed)
+        self.page_machines = MachinesPage(client=self.session.client)
         self.page_downloads = DownloadsPage()
+        self.page_lab = LabPage()
         self.page_completed = CompletedPage()
         self.page_session = SessionPage()
         self.page_settings = SettingsPage()
@@ -269,6 +164,7 @@ class MainWindow(QMainWindow):
             "dashboard": self.page_dashboard,
             "machines":  self.page_machines,
             "downloads": self.page_downloads,
+            "lab":       self.page_lab,
             "completed": self.page_completed,
             "settings":  self.page_settings,
             "about":     self.page_about,
@@ -278,19 +174,32 @@ class MainWindow(QMainWindow):
             self.stack.addWidget(w)
 
         # wiring
-        self.page_machines.request_toggle_completed.connect(self._toggle_completed)
+        self.page_machines.request_toggle_completed.connect(self.session.toggle)
         self.page_machines.request_download.connect(self._start_download)
         self.page_machines.request_cancel_download.connect(self._cancel_download)
         self.page_downloads.request_cancel.connect(self._cancel_download)
         self.page_downloads.request_remove.connect(self._remove_download)
         self.page_downloads.request_open.connect(self._open_download_folder)
-        self.page_session.request_login.connect(self._do_login)
-        self.page_session.request_logout.connect(self._do_logout)
-        self.page_completed.request_refresh.connect(self._refresh_completed)
+        self.page_downloads.request_clear_finished.connect(self.downloads.clear_finished)
+        self.page_machines.request_launch.connect(self._launch_lab)
+        self.page_machines.request_refresh_catalog.connect(self.catalogs.refresh)
+        self.page_lab.request_action.connect(self._lab_action)
+        self.page_lab.request_refresh.connect(self._refresh_docker)
+        self.page_lab.request_go_machines.connect(lambda: self._go("machines"))
+        self.page_lab.request_grant_access.connect(self._grant_docker_access)
+        self.page_lab.request_start_service.connect(self._start_docker_service)
+        self.page_settings.request_set_docker_network.connect(self._set_docker_network)
+        self.page_session.request_login.connect(self.session.login)
+        self.page_session.request_logout.connect(self.session.logout)
+        self.page_completed.request_refresh.connect(lambda: self.session.sync(manual=True))
+        self.page_completed.request_toggle_completed.connect(self.session.toggle)
+        self.page_completed.request_open_machine.connect(self._open_machine_detail)
         self.page_settings.request_change_downloads_dir.connect(self._set_downloads_dir)
         self.page_settings.request_set_os_notifications.connect(self._set_os_notifications)
         self.page_settings.request_set_in_app_notifications.connect(self._set_in_app_notifications)
         self.page_settings.request_open_downloads_dir.connect(self._open_downloads_dir)
+        self.page_settings.request_set_max_concurrent.connect(self._set_max_concurrent)
+        self.page_settings.request_set_theme.connect(self._set_theme)
 
         self.setCentralWidget(root)
         # No usamos QStatusBar: la barra inferior se sustituye por toasts.
@@ -312,15 +221,16 @@ class MainWindow(QMainWindow):
         # arranque
         # Pintamos primero las completadas locales (anónimas) para que
         # estén visibles desde el principio.
-        self.page_machines.set_completed(self._completed)
-        self.page_completed.set_items(self._completed)
-        self.page_dashboard.set_done(len(self._completed))
+        self._on_completed_changed(self.session.completed)
 
-        self._load_cached_csv()
-        self._refresh_csv_background()
+        self.catalogs.load_cached()
+        self.catalogs.refresh()
+        self._install_shortcuts()
         self._refresh_downloaded_state()
         # Auto-login si hay sesión guardada
-        self._try_restore_session()
+        self.session.restore()
+        # Docker
+        self._refresh_docker()
 
     # ---- Navegación ----
 
@@ -340,8 +250,8 @@ class MainWindow(QMainWindow):
         super().resizeEvent(event)
         try:
             self.toasts.reposition()
-        except Exception:
-            pass
+        except RuntimeError as exc:  # widget ya destruido durante el cierre
+            logger.debug("toasts.reposition: %s", exc)
 
     def statusBar(self):  # type: ignore[override]
         """Devolvemos un stub silencioso en lugar de la QStatusBar nativa."""
@@ -356,306 +266,91 @@ class MainWindow(QMainWindow):
             try:
                 self.toasts.show(title, body, kind=kind,
                                  on_click=on_click, payload=payload)
-            except Exception:
-                pass
+            except Exception:  # noqa: BLE001
+                logger.exception("toast in-app")
         if self.settings.os_notifications and self._os_backend:
             try:
                 notify_os(title, body, app_id="DockerLabs GUI")
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("notificación del SO: %s", exc)
 
-    # ---- CSV ----
+    # ---- Catálogo (la lógica vive en CatalogController) ----
 
-    def _load_cached_csv(self) -> None:
-        loaded = False
-        if DEFAULT_CSV.exists():
-            self.page_machines.load_csv(DEFAULT_CSV)
-            loaded = True
-        elif LEGACY_CSV.exists():
-            self.page_machines.load_csv(LEGACY_CSV)
-            loaded = True
+    @property
+    def catalog(self):
+        return self.catalogs.catalog
+
+    def _on_catalog_loading(self, active: bool, msg: str) -> None:
+        self.page_machines.set_loading(active, msg)
+
+    def _apply_catalog(self, cat) -> None:
+        self.page_machines.set_catalog(cat)
+        self.page_dashboard.set_catalog(cat, self.session.completed)
+        self.page_completed.set_catalog(cat)
+        self._reconcile_downloads_with_catalog()
+
+    def _on_catalog_refresh_failed(self, err: str, has_cache: bool) -> None:
+        if not has_cache:
+            self.page_machines.set_catalog(None)
+            self.notify("Sin catálogo", f"Sin internet y sin caché: {err}", kind="warning")
         else:
-            self.page_machines.lbl_count.setText("Sin CSV. Descargando catálogo…")
-        self._update_totals_from_csv()
-        # Cruzar archivos de la carpeta de descargas con los nombres reales
-        # del CSV para que las maquinas ya bajadas aparezcan como
-        # 'descargadas' y no se vuelvan a descargar.
-        if loaded:
-            self._reconcile_downloads_with_csv()
+            self.notify("Sin conexión", "Usando el catálogo cacheado", kind="info")
 
-    def _refresh_csv_background(self) -> None:
-        worker = ExportWorker(self.client, str(CSV_DIR), "dockerlabs", parent=self)
-        worker.done.connect(self._on_csv_refreshed)
-        worker.failed.connect(self._on_csv_refresh_failed)
-        worker.finished.connect(lambda: self._workers.remove(worker)
-                                if worker in self._workers else None)
-        self._workers.append(worker); worker.start()
-        self.statusBar().showMessage("Actualizando catálogo…")
+    # ---- Sesión (la lógica vive en SessionController; aquí sólo se pinta) ----
 
-    def _on_csv_refreshed(self, summary: dict) -> None:
-        path = Path(summary["files"]["machines_csv"])
-        self.page_machines.load_csv(path)
-        self._update_totals_from_csv()
-        self.statusBar().showMessage(
-            f"Catálogo actualizado · {summary['machine_count']} máquinas"
-        )
-        self._reconcile_downloads_with_csv()
-
-    def _on_csv_refresh_failed(self, err: str) -> None:
-        msg = "Sin conexión: usando catálogo cacheado"
-        if not DEFAULT_CSV.exists() and not LEGACY_CSV.exists():
-            msg = f"Sin internet y sin CSV cacheado: {err}"
-            self.page_machines.lbl_count.setText(msg)
-            self.notify("Sin catálogo", msg, kind="warning")
-        self.statusBar().showMessage(msg)
-
-    # ---- Sesión ----
-
-    def _try_restore_session(self) -> None:
-        if not ENV_FILE.exists():
-            return
-        worker = SessionRestoreWorker(self.client, ENV_FILE, parent=self)
-        worker.success.connect(self._on_restore_ok)
-        worker.failed.connect(self._on_restore_fail)
-        worker.finished.connect(lambda: self._workers.remove(worker)
-                                if worker in self._workers else None)
-        self._workers.append(worker); worker.start()
-
-    def _on_restore_ok(self, username: str, profile_url: str) -> None:
-        self.notify("Sesión restaurada", f"Bienvenido de nuevo, {username}", kind="info")
-        self._apply_login(username, profile_url, sync_anonymous=True)
-
-    def _on_restore_fail(self, reason: str) -> None:
-        if reason == "no-cookie":
-            return  # no había nada que restaurar, silencio total
-        self.statusBar().showMessage("Sesión guardada expirada; inicia sesión de nuevo.")
-
-    def _do_login(self, user: str, pwd: str) -> None:
-        if not user or not pwd:
-            self.notify("Faltan datos", "Usuario y contraseña obligatorios", kind="warning")
-            return
-        self.statusBar().showMessage("Autenticando…")
-        # Toast in-app de 'autenticando' (SOLO in-app, nunca al SO).
-        # Lo emitimos directamente con el ToastManager para saltarnos
-        # los ajustes de notificaciones.
+    def _on_login_started(self, user: str) -> None:
+        # Toast in-app de 'autenticando' (SOLO in-app, nunca al SO): lo
+        # emitimos directamente con el ToastManager para saltarnos los
+        # ajustes de notificaciones.
         try:
-            self.toasts.show("Autenticando…",
-                             f"Conectando como {user}", kind="info")
+            self.toasts.show("Autenticando…", f"Conectando como {user}", kind="info")
         except Exception:  # noqa: BLE001
-            pass
-        # Nuevo cliente para evitar arrastrar cookies viejas
-        self.client = DockerLabsExtClient()
-        worker = LoginWorker(self.client, user, pwd, parent=self)
-        worker.success.connect(self._on_login_ok)
-        worker.failed.connect(self._on_login_fail)
-        worker.finished.connect(lambda: self._workers.remove(worker)
-                                if worker in self._workers else None)
-        self._workers.append(worker); worker.start()
+            logger.exception("toast autenticando")
 
-    def _on_login_ok(self, username: str, profile_url: str) -> None:
-        self.statusBar().showMessage(f"Sesión iniciada como {username}")
-        self.notify("Sesión iniciada", f"Bienvenido, {username}", kind="success")
-        # Persistir la sesión en .env (cookie + csrf)
-        try:
-            cookie = self.client.session_cookie_value() or ""
-            csrf = self.client.csrf_token or ""
-            res = AuthResult(
-                success=True, message="", redirect_url=None,
-                username=username, session_cookie=cookie, csrf_token=csrf,
-                raw_response={},
-            )
-            save_env(ENV_FILE, build_session_payload(res, self.client.base_url))
-        except Exception:  # noqa: BLE001
-            pass
-        self._apply_login(username, profile_url, sync_anonymous=True)
-
-    def _on_login_fail(self, msg: str) -> None:
-        self.statusBar().showMessage("Login fallido")
-        self.notify("Login fallido", msg, kind="error")
-
-    def _apply_login(self, username: str, profile_url: str, sync_anonymous: bool) -> None:
-        """Aplica el estado lógico de 'logueado' tras un login nuevo o restaurado."""
-        self._username = username
+    def _on_logged_in(self, username: str, profile_url: str) -> None:
         self.sidebar.set_logged_in(username)
         self.page_dashboard.set_session(username)
-        self.page_session.set_logged_in(username, len(self._completed))
+        self.page_session.set_logged_in(username, len(self.session.completed))
         if profile_url:
-            self.sidebar.avatar.fetch_image(self.client, profile_url)
+            self.sidebar.avatar.fetch_image(self.session.client, profile_url)
             # También para el avatar grande de la página Sesión
             self._fetch_big_avatar(profile_url)
-        # Migrar las completadas anónimas (si las hay) al usuario:
-        if sync_anonymous:
-            anon = self._completed_store.drain_anonymous()
-            if anon:
-                self._completed_store.merge_into_user(username, anon)
-        # Base local del usuario
-        local_user = self._completed_store.all_for_user(username)
-        self._completed = set(local_user)
-        self.page_machines.set_completed(self._completed)
-        self.page_completed.set_items(self._completed)
-        self.page_dashboard.set_done(len(self._completed))
-        self.page_session.update_stats(len(self._completed))
-        # Sincronizar con servidor en background
-        self._sync_completed_with_server()
+
+    def _on_logged_out(self) -> None:
+        self.sidebar.set_logged_out()
+        self.page_dashboard.set_session(None)
+        self.page_session.set_logged_out()
+        # Tras cerrar sesión, llevamos al usuario al dashboard
+        self._go("dashboard")
+
+    def _on_completed_changed(self, completed) -> None:
+        completed = set(completed)
+        self.page_machines.set_completed(completed)
+        self.page_completed.set_items(completed)
+        self.page_dashboard.set_completed(completed)
+        self.page_session.update_stats(len(completed))
 
     def _fetch_big_avatar(self, profile_url: str) -> None:
         """Reutiliza el fetcher del avatar pequeño para también alimentar el grande."""
         try:
             from widgets.avatar import _AvatarFetcher
+            client = self.session.client
             if not profile_url.startswith("http"):
-                profile_url = self.client.base_url.rstrip("/") + profile_url
-            fetcher = _AvatarFetcher(self.client, profile_url, self.page_session)
+                profile_url = client.base_url.rstrip("/") + profile_url
+            fetcher = _AvatarFetcher(client, profile_url, self.page_session)
             fetcher.finished_data.connect(
                 lambda data, _u: self.page_session.set_avatar_pixmap(bytes(data))
             )
-            fetcher.finished.connect(
-                lambda: self._workers.remove(fetcher) if fetcher in self._workers else None
-            )
-            self._workers.append(fetcher)
-            fetcher.start()
+            self._workers.track(fetcher)
         except Exception:  # noqa: BLE001
-            pass
-
-    def _do_logout(self) -> None:
-        # Borrar la sesión persistente para que al reiniciar NO se auto-loguee
-        try:
-            if ENV_FILE.exists():
-                save_env(ENV_FILE, {
-                    "DOCKERLABS_USERNAME": "",
-                    "DOCKERLABS_SESSION": "",
-                    "DOCKERLABS_CSRF": "",
-                    "DOCKERLABS_LOGIN_AT": "",
-                    "DOCKERLABS_BASE_URL": self.client.base_url,
-                })
-        except Exception:  # noqa: BLE001
-            pass
-        self.client = DockerLabsExtClient()
-        self._username = None
-        # No vaciamos el set local; el usuario sigue viendo lo que tenía
-        # marcado offline. Lo que sí reseteamos es el 'visible'.
-        self._completed = self._completed_store.all_for_user(None)
-        self.sidebar.set_logged_out()
-        self.page_dashboard.set_session(None)
-        self.page_dashboard.set_done(len(self._completed))
-        self.page_machines.set_completed(self._completed)
-        self.page_completed.set_items(self._completed)
-        self.page_session.set_logged_out()
-        self.statusBar().showMessage("Sesión cerrada")
-        self.notify("Sesión cerrada", kind="info")
-        # Tras cerrar sesión, llevamos al usuario al dashboard
-        self._go("dashboard")
-
-    # ---- Completadas ----
-
-    def _refresh_completed(self) -> None:
-        """Refresco manual (botón 'Sincronizar' de la página Completadas).
-
-        Si no hay sesión, mostramos sólo un toast informativo (sin
-        redirigir al login: el usuario decide cuándo ir).
-        """
-        if not self._username:
-            self.notify("Inicia sesión",
-                        "Necesitas iniciar sesión para sincronizar con DockerLabs.",
-                        kind="warning")
-            return
-        self._sync_completed_with_server()
-
-    def _sync_completed_with_server(self) -> None:
-        if not self._username:
-            return
-        self.statusBar().showMessage("Sincronizando completadas con DockerLabs…")
-        worker = SyncCompletedWorker(self.client, self._completed, parent=self)
-        worker.done.connect(self._on_sync_done)
-        worker.failed.connect(self._on_sync_fail)
-        worker.finished.connect(lambda: self._workers.remove(worker)
-                                if worker in self._workers else None)
-        self._workers.append(worker); worker.start()
-
-    def _on_sync_done(self, final: list, pushed: list) -> None:
-        self._completed = set(final)
-        if self._username:
-            self._completed_store.set_for_user(self._username, self._completed)
-        self.page_machines.set_completed(self._completed)
-        self.page_completed.set_items(self._completed)
-        self.page_dashboard.set_done(len(self._completed))
-        self.page_session.update_stats(len(self._completed))
-        if pushed:
-            self.statusBar().showMessage(
-                f"{len(self._completed)} completadas · {len(pushed)} subidas al servidor"
-            )
-            self.notify("Completadas sincronizadas",
-                        f"Se subieron {len(pushed)} máquinas locales al servidor.",
-                        kind="success")
-        else:
-            self.statusBar().showMessage(f"{len(self._completed)} completadas")
-
-    def _on_sync_fail(self, err: str) -> None:
-        self.statusBar().showMessage(f"Error sincronizando: {err}")
-        self.notify("Error sincronizando", err, kind="error")
-
-    def _on_completed_done(self, names: list[str]) -> None:
-        self._completed = set(names)
-        self.page_machines.set_completed(self._completed)
-        self.page_completed.set_items(self._completed)
-        self.page_dashboard.set_done(len(self._completed))
-        self.statusBar().showMessage(f"{len(self._completed)} máquinas completadas")
-
-    def _toggle_completed(self, name: str) -> None:
-        if not self._username:
-            # Sin sesión: marcamos/desmarcamos en local; al iniciar sesión
-            # estas marcas se sincronizarán con el servidor.
-            if name in self._completed:
-                self._completed.discard(name)
-                self._completed_store.remove(None, name)
-                self.notify("Desmarcada (local)",
-                            f"{name} desmarcada localmente. Inicia sesión para sincronizar.",
-                            kind="info")
-            else:
-                self._completed.add(name)
-                self._completed_store.add(None, name)
-                self.notify("Completada (local)",
-                            f"{name} marcada localmente. Se subirá al iniciar sesión.",
-                            kind="info")
-            self.page_machines.set_completed(self._completed)
-            self.page_completed.set_items(self._completed)
-            self.page_dashboard.set_done(len(self._completed))
-            return
-        self.statusBar().showMessage(f"Alternando estado de {name}…")
-        worker = ToggleWorker(self.client, name, parent=self)
-        worker.done.connect(self._on_toggle_ok)
-        worker.failed.connect(self._on_toggle_fail)
-        worker.finished.connect(lambda: self._workers.remove(worker)
-                                if worker in self._workers else None)
-        self._workers.append(worker); worker.start()
-
-    def _on_toggle_ok(self, name: str, new_state: bool) -> None:
-        if new_state:
-            self._completed.add(name)
-            if self._username:
-                self._completed_store.add(self._username, name)
-        else:
-            self._completed.discard(name)
-            if self._username:
-                self._completed_store.remove(self._username, name)
-        self.page_machines.set_completed(self._completed)
-        self.page_completed.set_items(self._completed)
-        self.page_dashboard.set_done(len(self._completed))
-        self.page_session.update_stats(len(self._completed))
-        verb_long  = "marcada como completada" if new_state else "desmarcada"
-        verb_short = "Completada" if new_state else "Desmarcada"
-        self.statusBar().showMessage(f"{name} {verb_long}")
-        self.notify(f"{verb_short}: {name}", kind="success" if new_state else "info")
-
-    def _on_toggle_fail(self, name: str, msg: str) -> None:
-        self.statusBar().showMessage(f"Error toggle {name}: {msg}")
-        self.notify(f"Error con {name}", msg, kind="error")
+            logger.exception("no se pudo lanzar la descarga del avatar grande")
 
     # ---- Descargas ----
 
     def _start_download(self, name: str, url: str) -> None:
         if not url:
             self.notify("Sin enlace de descarga",
-                        f"{name} no tiene enlace MEGA en el catálogo.", kind="warning")
+                        f"{name} no tiene enlace de descarga en el catálogo.", kind="warning")
             return
         # Si ya esta en disco, no relanzar la descarga: abrir la carpeta.
         existing = self.downloads.downloaded_paths().get(name)
@@ -799,8 +494,8 @@ class MainWindow(QMainWindow):
                         return True
                     if _has("dolphin") and _try(["dolphin", str(folder)]):
                         return True
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("abrir explorador nativo: %s", exc)
 
         # Red de seguridad: QDesktopServices con file:// URI
         try:
@@ -829,38 +524,18 @@ class MainWindow(QMainWindow):
         )
         self._refresh_downloaded_state()
 
-    def _on_dm_quota(self, machine: str, error_msg: str) -> None:
-        """MEGA ha bloqueado la descarga por límite de ancho de banda.
-
-        Detectado por uno de estos síntomas (ver mega_downloader.py):
-          * HTTP 509 (Bandwidth Limit Exceeded)
-          * HTTP 403/429/503 con cuerpo JSON que contiene códigos -17/-6/-19/-4
-          * Payload JSON corto {'e': -17} antes de los datos cifrados
-          * Respuesta del endpoint /cs con `e` o lista con primer entero negativo
-            en MEGA_QUOTA_CODES (-4 ERATELIMIT, -6 ETOOMANY, -17 EOVERQUOTA,
-            -19 ETOOMANYCONNECTIONS)
-        """
-        self.statusBar().showMessage(f"MEGA: cuota agotada para {machine}")
-        # Toast prolongado (cuota) con detalles para el usuario.
-        try:
-            self.toasts.show(
-                "Límite de MEGA alcanzado",
-                f"{machine}: {error_msg.splitlines()[0]}\n"
-                f"La cuota se restaura sola en unas horas; "
-                f"prueba con otra IP/VPN o cuenta MEGA Pro.",
-                kind="warning",
-            )
-        except Exception:  # noqa: BLE001
-            pass
-        if self.settings.os_notifications and self._os_backend:
-            try:
-                notify_os(
-                    "DockerLabs: MEGA cuota agotada",
-                    f"{machine}: límite de transferencia de MEGA superado.",
-                    app_id="DockerLabs GUI",
-                )
-            except Exception:  # noqa: BLE001
-                pass
+    def _on_dm_failed(self, machine: str, kind: str, error_msg: str) -> None:
+        """Una descarga ha fallado (tras los reintentos internos)."""
+        titles = {
+            "not_found": "Máquina no disponible",
+            "unsupported": "Enlace no soportado",
+            "integrity": "Archivo corrupto",
+            "server": "Servidor de DockerLabs no responde",
+        }
+        title = titles.get(kind, "Error de descarga")
+        first_line = (error_msg or "").splitlines()[0] if error_msg else ""
+        self.statusBar().showMessage(f"{title}: {machine}")
+        self.notify(title, f"{machine}: {first_line}", kind="error")
         self._refresh_downloaded_state()
 
     def _open_path(self, path: str) -> None:
@@ -868,7 +543,7 @@ class MainWindow(QMainWindow):
         try:
             self._open_in_explorer(Path(path))
         except Exception:  # noqa: BLE001
-            pass
+            logger.exception("abrir ruta %s", path)
 
     def _refresh_downloaded_state(self) -> None:
         states = self.downloads.all_states()
@@ -882,19 +557,167 @@ class MainWindow(QMainWindow):
         self.page_machines.set_downloaded(downloaded)
         self.page_dashboard.set_downloads(len(downloaded))
 
-    def _reconcile_downloads_with_csv(self) -> None:
-        """Cruza los archivos en la carpeta de descargas con los nombres
-        reales del CSV. Tras esto, las máquinas ya bajadas aparecen como
-        descargadas en la lista de Máquinas, pero NO en la página
-        'Descargas' (esa solo muestra las de la sesión actual)."""
+    def _reconcile_downloads_with_catalog(self) -> None:
+        """Cruza los archivos de la carpeta de descargas con los nombres reales
+        del catálogo para marcar como descargadas las máquinas ya bajadas."""
         try:
-            rows = getattr(self.page_machines, "_all_rows", [])
-            names = [r.get("nombre", "") for r in rows if r.get("nombre")]
+            names = self.page_machines.names
             if names:
-                self.downloads.reconcile_with_csv(names)
+                self.downloads.reconcile_with_catalog(names)
         except Exception:  # noqa: BLE001
-            pass
+            logger.exception("reconcile_with_catalog")
         self._refresh_downloaded_state()
+
+    # ---- Atajos de teclado ----
+
+    def _install_shortcuts(self) -> None:
+        keys = ["dashboard", "machines", "downloads", "lab", "completed", "settings", "about"]
+        for i, key in enumerate(keys, start=1):
+            QShortcut(QKeySequence(f"Ctrl+{i}"), self, activated=lambda k=key: self._go(k))
+        QShortcut(QKeySequence.StandardKey.Find, self, activated=self._focus_search)
+        QShortcut(QKeySequence("F5"), self, activated=self.catalogs.refresh)
+        QShortcut(QKeySequence("Escape"), self, activated=self.page_machines.close_detail)
+
+    def _focus_search(self) -> None:
+        self._go("machines")
+        self.page_machines.focus_search()
+
+    def _open_machine_detail(self, name: str) -> None:
+        """Navega al catálogo y abre el panel de detalle de `name` (desde Completadas, Laboratorio…)."""
+        self._go("machines")
+        self.page_machines.show_detail(name)
+
+    # ---- Laboratorio (Docker) ----
+
+    def _refresh_docker(self) -> None:
+        self.page_lab.set_docker_info(None, "")
+        self.labs.refresh_docker_info()
+
+    def _on_docker_info(self, info) -> None:
+        self.page_lab.set_docker_info(info, self.labs.install_hint(),
+                                      self.labs.permission_hint())
+        self.page_dashboard.set_docker(info)
+
+    # ---- Permisos de Docker (Linux: pkexec / sudo -A) ----
+
+    def _grant_docker_access(self) -> None:
+        info = self.labs.docker_info
+        if not info.needs_elevation:
+            self.notify("No hace falta", "Tu usuario ya puede usar Docker.", kind="info")
+            return
+        if not self.labs.grant_access():
+            self.notify("Ya hay una autorización en curso", kind="info")
+
+    def _start_docker_service(self) -> None:
+        if not self.labs.start_service():
+            self.notify("Ya hay una autorización en curso", kind="info")
+
+    def _on_elevation_started(self, action: str) -> None:
+        self.page_lab.set_elevating(True)
+
+    def _on_elevation_done(self, action: str, ok: bool, detail: str) -> None:
+        self.page_lab.set_elevating(False)
+        titles = {"grant": "Acceso a Docker", "start_service": "Servicio Docker"}
+        title = titles.get(action, action)
+        if ok:
+            self.notify(title, detail.splitlines()[0] if detail else "Hecho", kind="success")
+        else:
+            self.notify(f"{title}: no se pudo", detail.splitlines()[0] if detail else "",
+                        kind="warning" if "cancelad" in detail.lower() else "error")
+
+    def _on_labs_list(self) -> None:
+        labs = self.labs.all_labs()
+        self.page_lab.render_labs(labs)
+        self.page_machines.set_running({s.machine for s in labs if s.phase == "running"})
+        self.page_dashboard.set_labs_running(sum(1 for s in labs if s.phase == "running"))
+
+    def _on_lab_changed(self, machine: str) -> None:
+        st = self.labs.lab(machine)
+        if st is not None:
+            self.page_lab.update_lab(st)
+
+    def _launch_lab(self, name: str) -> None:
+        info = self.labs.docker_info
+        if not info.available:
+            self.notify("Docker no está instalado", self.labs.install_hint().splitlines()[0],
+                        kind="error")
+            self._go("lab")
+            return
+        if info.needs_elevation:
+            self._go("lab")
+            if info.can_elevate:
+                res = QMessageBox.question(
+                    self, "Permiso para usar Docker",
+                    "Tu usuario no puede usar Docker sin sudo.\n\n"
+                    "¿Conceder acceso ahora? Se abrirá el diálogo de autenticación del sistema "
+                    "y se añadirá tu usuario al grupo docker.",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                )
+                if res == QMessageBox.StandardButton.Yes:
+                    self._grant_docker_access()
+            else:
+                self.notify("Sin permiso para usar Docker",
+                            "Ejecuta: sudo usermod -aG docker $USER (y reinicia sesión)",
+                            kind="error")
+            return
+        if not info.running:
+            self.notify("Docker no responde", (info.error or "").splitlines()[0], kind="error")
+            self._go("lab")
+            return
+        zip_path = self.downloads.downloaded_paths().get(name)
+        if zip_path is None:
+            self.notify("Primero descarga la máquina",
+                        f"{name} no está en la carpeta de descargas.", kind="warning")
+            return
+        if not self.labs.launch(name, zip_path):
+            self.notify("Ya en marcha", f"{name} ya se está desplegando.", kind="info")
+            return
+        self.notify("Desplegando laboratorio", name, kind="info")
+        self._go("lab")
+
+    def _lab_action(self, machine: str, action: str) -> None:
+        if action == "copy_ip":
+            self.notify("IP copiada", "La IP de la máquina está en el portapapeles.", kind="success")
+        elif action == "shell":
+            if not self.labs.open_shell(machine):
+                st = self.labs.lab(machine)
+                cmd = " ".join(self.labs.client.exec_shell_command(st.container_name)) if st else ""
+                self.notify("No se pudo abrir la terminal",
+                            f"Ejecuta manualmente: {cmd}", kind="warning")
+        elif action == "start":
+            self.labs.start(machine)
+        elif action == "stop":
+            self.labs.stop(machine)
+        elif action == "restart":
+            self.labs.restart(machine)
+        elif action == "cancel":
+            self.labs.cancel_launch(machine)
+        elif action == "remove":
+            res = QMessageBox.question(
+                self, "Eliminar laboratorio",
+                f"¿Eliminar el contenedor y la imagen Docker de «{machine}»?\n"
+                "El .zip descargado se conserva; podrás volver a lanzarla.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if res == QMessageBox.StandardButton.Yes:
+                self.labs.remove(machine, remove_image=True)
+
+    def _on_lab_started(self, machine: str, access_text: str) -> None:
+        self.notify("Laboratorio en marcha", f"{machine}\n{access_text}", kind="success",
+                    on_click=lambda _p: self._go("lab"), payload=machine)
+
+    def _on_lab_failed(self, machine: str, error: str) -> None:
+        self.notify(f"Error en {machine}", error.splitlines()[0] if error else "", kind="error")
+
+    def _on_lab_action_done(self, machine: str, action: str) -> None:
+        verbs = {"stop": "detenida", "start": "iniciada", "restart": "reiniciada",
+                 "remove": "eliminada"}
+        self.notify(f"{machine} {verbs.get(action, action)}", kind="info")
+
+    def _set_docker_network(self, mode: str) -> None:
+        self.settings.docker_network = mode or "auto"
+        self.settings_store.save(self.settings)
+        self.labs.set_network_preference(self.settings.docker_network)
 
     # ---- Ajustes ----
 
@@ -904,7 +727,41 @@ class MainWindow(QMainWindow):
             os_notifications=self.settings.os_notifications,
             in_app_notifications=self.settings.in_app_notifications,
             os_backend_available=self._os_backend,
+            docker_network=self.settings.docker_network,
+            max_concurrent=self.settings.max_concurrent_downloads,
+            theme=self.settings.theme,
         )
+
+    def _set_theme(self, theme: str) -> None:
+        theme = theme if theme in THEMES else DEFAULT_THEME
+        if theme == self.settings.theme and theme == _theme.CURRENT_THEME:
+            return
+        self.settings.theme = theme
+        self.settings_store.save(self.settings)
+        # El QSS global se aplica al instante (tabla, botones, inputs...). Los
+        # estilos inline de paneles ya construidos no cambian: ofrecemos reiniciar.
+        app = QApplication.instance()
+        qss = apply_theme(theme)
+        if app is not None:
+            app.setStyleSheet(qss)
+        self.setWindowIcon(svg_icon("machines", _theme.ACCENT, 64))
+        res = QMessageBox.question(
+            self, "Tema cambiado",
+            "El tema se aplica por completo al reiniciar la aplicación.\n"
+            "¿Reiniciar ahora? (las descargas en curso se cancelarán)",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if res == QMessageBox.StandardButton.Yes:
+            self._restart_requested = True
+            self.close()
+        else:
+            self.notify("Tema guardado", "Se aplicará del todo la próxima vez que abras la app.", kind="info")
+
+    def _set_max_concurrent(self, n: int) -> None:
+        self.settings.max_concurrent_downloads = max(1, min(6, int(n)))
+        self.settings_store.save(self.settings)
+        self.downloads.set_max_concurrent(self.settings.max_concurrent_downloads)
 
     def _set_downloads_dir(self, path: str) -> None:
         try:
@@ -936,36 +793,69 @@ class MainWindow(QMainWindow):
 
     # ---- Totales ----
 
-    def _update_totals_from_csv(self) -> None:
-        try:
-            n = len(self.page_machines._all_rows)  # noqa: SLF001
-            self.page_dashboard.set_total(n)
-        except Exception:
-            pass
+    def _update_totals(self) -> None:
+        self.page_dashboard.set_total(len(self.page_machines.names))
 
     # ---- Cierre ----
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
+        running = self.labs.running_labs()
+        if running:
+            names = ", ".join(s.machine for s in running)
+            res = QMessageBox.question(
+                self, "Laboratorios en ejecución",
+                f"Hay {len(running)} laboratorio(s) en marcha: {names}.\n\n"
+                "¿Quieres detenerlos antes de salir?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                | QMessageBox.StandardButton.Cancel,
+            )
+            if res == QMessageBox.StandardButton.Cancel:
+                event.ignore()
+                return
+            if res == QMessageBox.StandardButton.Yes:
+                self.labs.stop_all()
+        try:
+            self.labs.shutdown()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("labs.shutdown: %s", exc)
         try:
             self.downloads.shutdown()
-        except Exception:
-            pass
-        for worker in list(self._workers):
-            try:
-                if worker.isRunning():
-                    worker.quit(); worker.wait(1500)
-            except RuntimeError:
-                pass
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("downloads.shutdown: %s", exc)
+        self.session.shutdown()
+        self.catalogs.shutdown()
+        self._workers.shutdown(1500)
         super().closeEvent(event)
 
 
 def main() -> int:
+    log_file = setup_logging(APP_DIR)
+    logger.info("DockerLabs GUI arrancando · %s %s · Python %s",
+                platform.system(), platform.release(), platform.python_version())
     app = QApplication(sys.argv)
     app.setApplicationName("DockerLabs GUI")
-    app.setStyleSheet(QSS)
+    app.setStyleSheet(apply_theme(_load_theme_pref()))
     win = MainWindow()
+    install_excepthook(lambda: win)
     win.show()
-    return app.exec()
+    logger.debug("log en %s", log_file)
+    code = app.exec()
+    if getattr(win, "_restart_requested", False):
+        _relaunch()
+    return code
+
+
+def _relaunch() -> None:
+    """Relanza la app con el mismo intérprete y argumentos (tras cambiar de tema)."""
+    try:
+        if getattr(sys, "frozen", False):
+            args = [sys.executable, *sys.argv[1:]]
+        else:
+            args = [sys.executable, *sys.argv]
+        logger.info("reiniciando: %s", " ".join(args))
+        subprocess.Popen(args, close_fds=True)  # noqa: S603
+    except Exception:  # noqa: BLE001
+        logger.exception("no se pudo relanzar la aplicación")
 
 
 if __name__ == "__main__":
