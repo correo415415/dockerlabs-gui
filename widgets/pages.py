@@ -47,6 +47,7 @@ from theme import (
 )
 from widgets.avatar import AvatarCircle
 from widgets.icons import icon as svg_icon
+from widgets.skeleton import LoadingPanel
 from workers import BaseWorker
 
 # ============================================================
@@ -613,11 +614,15 @@ class MachinesPage(QWidget):
         self.table.doubleClicked.connect(lambda _i: self._open_detail_for_current(force=True))
         body.addWidget(self.table, 1)
 
-        # Estado vacío / cargando
-        self.empty = QLabel("Cargando catálogo…")
+        # Estado cargando (skeleton + spinner) y estado vacío
+        self.loading = LoadingPanel(rows=10)
+        body.addWidget(self.loading, 1)
+        self.empty = QLabel("Sin catálogo.")
         self.empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.empty.setStyleSheet(f"color: {FG_MUTED}; font-size: 13px; padding: 24px;")
+        self.empty.setVisible(False)
         body.addWidget(self.empty)
+        self.table.setVisible(False)
 
         self.lbl_count = QLabel("Cargando…")
         self.lbl_count.setStyleSheet(f"color: {FG_MUTED};")
@@ -651,6 +656,7 @@ class MachinesPage(QWidget):
         self._catalog = catalog
         self.model.set_machines(catalog.machines if catalog else [])
         has = bool(catalog and catalog.machines)
+        self.loading.setVisible(False)
         self.table.setVisible(has)
         self.empty.setVisible(not has)
         if not has:
@@ -664,11 +670,20 @@ class MachinesPage(QWidget):
                 self._push_status_to_detail()
 
     def set_loading(self, loading: bool, text: str = "") -> None:
+        """Muestra el skeleton mientras no haya filas; con catálogo sólo bloquea el botón."""
         self.btn_refresh.setEnabled(not loading)
         if loading and not self.model.rowCount():
-            self.empty.setText(text or "Cargando catálogo…")
-            self.empty.setVisible(True)
+            self.loading.set_text(text or "Cargando catálogo…")
+            self.loading.setVisible(True)
+            self.empty.setVisible(False)
             self.table.setVisible(False)
+        elif not loading and not self.model.rowCount():
+            self.loading.setVisible(False)
+            self.empty.setVisible(True)
+
+    @property
+    def is_loading(self) -> bool:
+        return self.loading.isVisible()
 
     @property
     def machines(self):
