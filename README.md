@@ -51,7 +51,7 @@ Red según plataforma:
 ### Permisos de Docker en Linux (sin sudo)
 Al arrancar, la app comprueba si tu usuario puede usar el socket de Docker. Si no puede
 y la app **no** se ejecuta como root, en la página *Laboratorio* aparece
-**«Conceder acceso»**: se abre el **diálogo de autenticación del sistema** (`pkexec`/polkit;
+**«Permitir acceso a Docker»**: se abre el **diálogo de autenticación del sistema** (`pkexec`/polkit;
 si no existe, `sudo -A` con un askpass gráfico) y se ejecuta, como root:
 
 - `usermod -aG docker <tu usuario>` (permanente tras reiniciar sesión),
@@ -137,3 +137,15 @@ TODO.md               análisis y hoja de ruta
 
 DockerLabs es un proyecto de [El Pingüino de Mario](https://dockerlabs.es). Esta GUI es un
 cliente no oficial.
+
+### Permisos de Docker en Linux
+
+Si tu usuario no puede usar el socket de Docker, la app ofrece dos opciones al pulsar
+**«Permitir acceso a Docker»** (o al lanzar una máquina):
+
+1. **Usar sudo con mi contraseña (recomendado)** — se comprueba con `sudo -v` y, si es
+   correcta, la app ejecuta `docker` con `sudo -S`. La contraseña solo se guarda en memoria
+   mientras la app está abierta; no se modifica nada en el sistema. «Dejar de usar sudo» la olvida.
+2. **Añadir mi usuario al grupo docker** — permanente. Se abre el diálogo del sistema (pkexec) y se
+   ejecuta `usermod -aG docker` más una ACL sobre el socket para que funcione sin cerrar sesión.
+   Ten en cuenta que pertenecer al grupo `docker` equivale a tener root sin contraseña.

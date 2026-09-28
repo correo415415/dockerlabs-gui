@@ -184,27 +184,34 @@ Implementado en `lab_manager.py` (núcleo sin Qt, testeable), `lab_controller.py
 - [x] README actualizado (sin MEGA, con Docker, permisos Linux, requisitos por SO).
 - [x] CI GitHub Actions (`ci.yml`: ruff + pytest en ubuntu/windows/macos, sin caché) y `release.yml` (PyInstaller → assets del GitHub Release al crear un tag `v*`).
 
-## 6. Feedback tras probar en Windows/Linux (v0.6)  `[~]`
+## 6. Feedback tras probar en Windows/Linux (v0.6)  `[x]`
 
 Capturas del usuario tras mergear PR #1/#2.
 
-- [ ] **Combos**: franjas negras arriba y abajo del desplegable (el contenedor del popup
-      `QComboBoxPrivateContainer` no tenía estilo). Aplicar en todos los combos.
-- [ ] **Checkboxes**: no basta con rellenar el cuadrado; dibujar el símbolo ✓ (SVG generado con
-      el color del tema) en `indicator:checked`.
-- [ ] **Tabla de máquinas**: las columnas *Completada* y *Estado/Descargada* tienen cabecera vacía →
-      icono + tooltip en el header para identificarlas.
-- [ ] **Detalle de máquina**: colores de dificultad mal (`badge()` usaba `#RRGGBBAA`, que Qt lee como
-      `#AARRGGBB`). Usar `rgba()`.
-- [ ] **Marca**: en el sidebar sólo el nombre de la app: «DockerLabs GUI» (sin «client · gui»).
-- [ ] **Login lento a veces**: reutilizar conexión HTTP (keep-alive con `requests.Session`), timeout
-      más corto con reintento, y no bloquear el login esperando el perfil/avatar.
-- [ ] **Exposición de red al lanzar**: la opción por defecto debe ser siempre «Automático»; validar el
-      valor guardado en `settings.json` y volver a `auto` si no es válido.
-- [ ] **Permisos Docker (Linux)**: ofrecer **dos** opciones cuando el usuario no puede usar el socket:
-      1. **Usar sudo (recomendado)**: pedir la contraseña una vez (sólo en memoria) y ejecutar
-         `docker` con `sudo -S`.
-      2. Añadir el usuario al grupo `docker` (lo que ya había: pkexec + `usermod` + ACL).
+- [x] **Combos**: franjas negras arriba y abajo del desplegable → se estila el contenedor del popup
+      (`QComboBoxPrivateContainer`, paleta + QSS) en todos los combos (`ghost_combo`).
+- [x] **Checkboxes**: símbolo ✓ (SVG generado con el color del tema en el tmp del sistema) en
+      `indicator:checked`, con estados hover/disabled. Radios (`QRadioButton`) estilizados igual.
+- [x] **Tabla de máquinas**: columnas *Completada* y *Estado* con icono en la cabecera + tooltip
+      (`HEADER_ICONS`/`HEADER_TOOLTIPS` en `machine_model.py`).
+- [x] **Detalle de máquina**: colores de dificultad mal — `badge()` usaba `#RRGGBBAA`, que Qt lee como
+      `#AARRGGBB`. Ahora `rgba()`.
+- [x] **Marca**: «DockerLabs GUI» en el sidebar (sin «client · gui»).
+- [x] **Login lento a veces**: `DockerLabsClient` pasa de `urllib` a `requests.Session` (keep-alive:
+      el login encadena 3-4 peticiones y antes cada una hacía un handshake TLS nuevo), timeout de
+      conexión 8 s con 2 reintentos (antes 30 s sin reintento), y el avatar ya no bloquea el login.
+      Tests con servidor HTTP local en `tests/test_api_client.py`.
+- [x] **Exposición de red al lanzar**: `docker_network` se valida al cargar; por defecto y ante valores
+      raros → `auto`.
+- [x] **Permisos Docker (Linux)**: diálogo «Permitir acceso a Docker» (`widgets/docker_access_dialog.py`)
+      con **dos** opciones:
+      1. **Usar sudo con mi contraseña (recomendado)**: se valida con `sudo -v`; si es correcta,
+         `DockerClient` ejecuta todo como `sudo -S -k -p '' docker …` (la contraseña solo vive en
+         memoria; botón «Dejar de usar sudo» para olvidarla). `docker exec` en terminal deja que sudo
+         pregunte él mismo.
+      2. **Añadir mi usuario al grupo docker (permanente)**: lo que ya había (pkexec + `usermod` + ACL),
+         con aviso de que equivale a root sin contraseña.
+      `DockerInfo.can_sudo` / `via_sudo`; `LabController.use_sudo()` / `forget_sudo()`.
 
 ## 5. Ideas futuras (no bloqueantes)  `[ ]`
 
