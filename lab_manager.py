@@ -554,7 +554,8 @@ class DockerClient:
 
     def __init__(self, binary: Optional[str] = None,
                  runner: Optional[Callable[..., subprocess.CompletedProcess]] = None) -> None:
-        self.binary = binary or shutil.which("docker") or ""
+        # None → autodetectar; "" → forzar "no instalado" (tests)
+        self.binary = (shutil.which("docker") or "") if binary is None else binary
         self._run = runner or self._default_runner
 
     # ---------- bajo nivel ----------

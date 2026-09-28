@@ -1,16 +1,21 @@
 name: CI
 
+# Ejecución SOLO manual (Actions → CI → Run workflow) para no consumir minutos en cada push.
 on:
-  push:
-    branches: [main, genspark_ai_developer]
-  pull_request:
   workflow_dispatch:
+    inputs:
+      os:
+        description: "Sistemas a probar"
+        type: choice
+        default: all
+        options: [all, ubuntu, windows, macos]
 
 # Sin caché de Actions (no disponible en esta cuenta): cada job instala desde cero.
 jobs:
   test:
     name: tests (${{ matrix.os }}, py${{ matrix.python }})
     runs-on: ${{ matrix.os }}
+    if: ${{ inputs.os == 'all' || startsWith(matrix.os, inputs.os) }}
     strategy:
       fail-fast: false
       matrix:

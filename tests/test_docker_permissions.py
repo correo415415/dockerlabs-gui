@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import socket
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -23,11 +24,20 @@ class Runner:
 
 @pytest.fixture
 def unix_socket(tmp_path):
-    path = tmp_path / "docker.sock"
+    if not hasattr(socket, "AF_UNIX"):
+        pytest.skip("sin sockets unix en esta plataforma")
+    # macOS limita la ruta del socket a ~104 bytes: usar un directorio corto
+    import tempfile
+    short = Path(tempfile.mkdtemp(prefix="dl", dir="/tmp" if Path("/tmp").is_dir() else None))
+    path = short / "d.sock"
     srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     srv.bind(str(path))
     yield path
     srv.close()
+    try:
+        path.unlink(); short.rmdir()
+    except OSError:
+        pass
 
 
 def test_socket_access_states(tmp_path, unix_socket):

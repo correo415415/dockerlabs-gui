@@ -3,9 +3,8 @@ name: Release
 # Construye ejecutables con PyInstaller para Linux / Windows / macOS y los publica
 # como assets de un GitHub Release (no se usa caché ni artefactos persistentes:
 # todo lo que se conserva vive en el release).
+# Ejecución SOLO manual: Actions → Release → Run workflow (indicar el tag).
 on:
-  push:
-    tags: ["v*"]
   workflow_dispatch:
     inputs:
       tag:
@@ -30,7 +29,7 @@ jobs:
           - os: macos-latest
             asset: dockerlabs-gui-macos-arm64
     env:
-      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      TAG: ${{ inputs.tag }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
