@@ -163,7 +163,7 @@ Implementado en `lab_manager.py` (núcleo sin Qt, testeable), `lab_controller.py
       downloader con servidor HTTP local, normalización de nombres. Tests de UI con
       `QT_QPA_PLATFORM=offscreen`.
 - [ ] `pyproject.toml`: bump versión, dependencias, `ruff` config; `requirements.txt`.
-- [ ] README actualizado (sin MEGA, con Docker, capturas, requisitos por SO).
+- [x] README actualizado (sin MEGA, con Docker, permisos Linux, requisitos por SO).
 - [ ] CI GitHub Actions: lint + tests en ubuntu/windows/macos.
 
 ## 5. Ideas futuras (no bloqueantes)  `[ ]`
