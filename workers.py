@@ -128,7 +128,14 @@ class WorkerPool:
                 if w.isRunning():
                     w.quit()
                     if not w.wait(timeout_ms):
-                        logger.warning("%s no terminó en %d ms", w.__class__.__name__, timeout_ms)
+                        # Último recurso: un QThread destruido mientras corre aborta el
+                        # proceso al salir ("QThread: Destroyed while thread is still
+                        # running"); en Windows eso se traduce en un crash silencioso.
+                        # Mejor cortar el hilo (normalmente bloqueado en red) que abortar.
+                        logger.warning("%s no terminó en %d ms; terminando a la fuerza",
+                                       w.__class__.__name__, timeout_ms)
+                        w.terminate()
+                        w.wait(1000)
             except RuntimeError:
                 # Ya destruido por Qt
                 pass
