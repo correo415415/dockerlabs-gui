@@ -513,7 +513,7 @@ class MachinesPage(QWidget):
 
     STATES = ["Todas", "Completadas", "Pendientes", "Descargadas", "En ejecución"]
 
-    def __init__(self, client=None, parent=None) -> None:
+    def __init__(self, client=None, parent=None, media_cache=None) -> None:
         super().__init__(parent)
         from PyQt6.QtWidgets import QSplitter, QTableView
 
@@ -644,7 +644,7 @@ class MachinesPage(QWidget):
         body.addWidget(self.lbl_count)
         splitter.addWidget(left)
 
-        self.detail = MachineDetailPanel(client=client)
+        self.detail = MachineDetailPanel(client=client, media_cache=media_cache)
         self.detail.request_download.connect(self.request_download)
         self.detail.request_cancel_download.connect(self.request_cancel_download)
         self.detail.request_launch.connect(self.request_launch)

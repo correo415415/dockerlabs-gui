@@ -33,6 +33,7 @@ from app_logging import install_excepthook, setup_logging
 from catalog_controller import CatalogController
 from download_manager import DownloadManager
 from lab_controller import LabController
+from media_cache import MediaCache
 from notifier import notify_os, os_backend_available
 from session_controller import SessionController
 from settings_store import SettingsStore, UserSettings
@@ -64,6 +65,7 @@ LABS_DIR = APP_DIR / "labs"
 SETTINGS_FILE = APP_DIR / "settings.json"
 ENV_FILE = APP_DIR / ".env"
 COMPLETED_FILE = APP_DIR / "completed.json"
+CACHE_DIR = APP_DIR / "cache"          # imágenes y valoraciones de máquinas
 
 
 # -----------------------------------------------------------------------------
@@ -151,7 +153,8 @@ class MainWindow(QMainWindow):
         self.catalogs.catalog_changed.connect(self._apply_catalog)
         self.catalogs.loading.connect(self._on_catalog_loading)
         self.catalogs.refresh_failed.connect(self._on_catalog_refresh_failed)
-        self.page_machines = MachinesPage(client=self.session.client)
+        self.media_cache = MediaCache(CACHE_DIR)
+        self.page_machines = MachinesPage(client=self.session.client, media_cache=self.media_cache)
         self.page_downloads = DownloadsPage()
         self.page_lab = LabPage()
         self.page_completed = CompletedPage()
