@@ -158,15 +158,21 @@ class LabItemWidget(QFrame):
             self.lbl_access.setStyleSheet(f"color: {FG_PRIMARY}; font-size: 13px;")
 
         bits = []
-        if st.image:
-            bits.append(f"imagen {st.image.repo_tag}")
-            if st.image.exposed_ports:
-                bits.append("EXPOSE " + ", ".join(f"{p}/{pr}" for p, pr in st.image.exposed_ports))
-        elif c and c.image:
-            bits.append(f"imagen {c.image}")
-        if c:
-            bits.append(f"contenedor {c.name}")
+        containers = getattr(st, "containers", None) or ([c] if c else [])
+        if len(containers) > 1:
+            bits.append(f"lab de pivoting · {len(containers)} máquinas")
+            bits.append("contenedores " + ", ".join(x.name for x in containers))
+        else:
+            if st.image:
+                bits.append(f"imagen {st.image.repo_tag}")
+                if st.image.exposed_ports:
+                    bits.append("EXPOSE " + ", ".join(f"{p}/{pr}" for p, pr in st.image.exposed_ports))
+            elif c and c.image:
+                bits.append(f"imagen {c.image}")
+            if c:
+                bits.append(f"contenedor {c.name}")
         self.lbl_info.setText("  ·  ".join(bits))
+        self.lbl_access.setWordWrap(True)
 
         running = phase == "running"
         stopped = phase == "stopped"

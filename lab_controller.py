@@ -7,9 +7,9 @@ import shlex
 import shutil
 import subprocess
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Sequence
 
 from PyQt6.QtCore import QObject, QThread, pyqtSignal
 
@@ -22,15 +22,16 @@ from lab_manager import (
     LabCancelled,
     LabError,
     LabFiles,
+    build_deploy_plan,
     choose_network_strategy,
     container_name_for,
-    describe_access,
+    deploy_plan,
+    describe_access_multi,
     extract_lab,
     grant_docker_access,
     inspect_image_tar,
     install_hint,
     permission_hint,
-    plan_port_mappings,
     slug_from_name,
     start_docker_service,
 )
@@ -48,7 +49,9 @@ class LabState:
     log_line: str = ""
     error: str = ""
     image: Optional[ImageInfo] = None
-    container: Optional[ContainerStatus] = None
+    container: Optional[ContainerStatus] = None      # principal (compat UI)
+    containers: List[ContainerStatus] = field(default_factory=list)   # todos (pivoting)
+    images: List[ImageInfo] = field(default_factory=list)
     strategy: str = "bridge"
     access_text: str = ""
 
@@ -59,6 +62,19 @@ class LabState:
     @property
     def container_name(self) -> str:
         return container_name_for(self.slug)
+
+    @property
+    def container_names(self) -> List[str]:
+        return [c.name for c in self.containers] or [self.container_name]
+
+    @property
+    def is_multi(self) -> bool:
+        return len(self.containers) > 1
+
+    def set_containers(self, statuses: List[ContainerStatus]) -> None:
+        self.containers = list(statuses)
+        self.container = statuses[0] if statuses else None
+        self.access_text = describe_access_multi(statuses, self.strategy) if statuses else ""
 
 
 # =====================================================================
@@ -125,7 +141,7 @@ class _LaunchWorker(QThread):
     progress = pyqtSignal(str, float)            # machine, percent
     log_line = pyqtSignal(str, str)              # machine, line
     image_ready = pyqtSignal(str, object)        # machine, ImageInfo
-    done = pyqtSignal(str, object, str)          # machine, ContainerStatus, strategy
+    done = pyqtSignal(str, object, str)          # machine, list[ContainerStatus], strategy
     failed = pyqtSignal(str, str)                # machine, error
 
     def __init__(self, client: DockerClient, machine: str, slug: str, zip_path: Path,
@@ -151,29 +167,21 @@ class _LaunchWorker(QThread):
                 on_progress=lambda d, t: self.progress.emit(m, d * 100.0 / max(t, 1)),
                 cancel=self._cancel.is_set,
             )
-            image = inspect_image_tar(files.tar_path)
-            self.image_ready.emit(m, image)
+            images = [inspect_image_tar(t) for t in files.tar_paths]
+            self.image_ready.emit(m, images[0])
+            if len(images) > 1:
+                self.log_line.emit(m, f"Lab de pivoting: {len(images)} máquinas "
+                                      f"({', '.join(i.repo_tag for i in images)})")
 
-            if not self.client.image_exists(image.repo_tag):
-                self.phase.emit(m, "loading")
-                self.client.load_image(
-                    files.tar_path,
-                    on_line=lambda ln: self.log_line.emit(m, ln),
-                    cancel=self._cancel.is_set,
-                )
-            if self._cancel.is_set():
-                raise LabCancelled()
-
-            self.phase.emit(m, "starting")
-            ports = plan_port_mappings(image.exposed_ports) if self.strategy == "bridge+ports" else []
-            self.client.run_container(
-                image, m, self.slug, ports=ports,
-                network_mode="host" if self.strategy == "host" else "bridge",
+            plan = build_deploy_plan(files, m, self.strategy, images=images)
+            statuses = deploy_plan(
+                self.client, plan,
+                on_phase=lambda ph: self.phase.emit(m, ph),
+                on_line=lambda ln: self.log_line.emit(m, ln),
+                cancel=self._cancel.is_set,
+                tar_paths=files.tar_paths,
             )
-            status = self.client.container_status(container_name_for(self.slug))
-            if status is None:
-                raise LabError("El contenedor se creó pero no se pudo inspeccionar.")
-            self.done.emit(m, status, self.strategy)
+            self.done.emit(m, statuses, self.strategy)
         except LabCancelled:
             self.failed.emit(m, "Cancelado por el usuario")
         except LabError as exc:
@@ -185,33 +193,36 @@ class _LaunchWorker(QThread):
 
 class _ActionWorker(QThread):
     """stop / start / restart / remove sobre un contenedor existente."""
-    done = pyqtSignal(str, str, object)   # machine, action, ContainerStatus|None
+    done = pyqtSignal(str, str, object)   # machine, action, list[ContainerStatus]
     failed = pyqtSignal(str, str, str)    # machine, action, error
 
     def __init__(self, client: DockerClient, machine: str, slug: str, action: str,
-                 image_tag: str = "", parent=None) -> None:
+                 image_tags: Sequence[str] = (), names: Sequence[str] = (), parent=None) -> None:
         super().__init__(parent)
         self.client = client
         self.machine = machine
         self.slug = slug
         self.action = action
-        self.image_tag = image_tag
+        self.image_tags = [t for t in image_tags if t]
+        self.names = list(names)
 
     def run(self) -> None:
-        name = container_name_for(self.slug)
+        names = self.names or self.client.container_names_for_slug(self.slug) or [container_name_for(self.slug)]
         try:
             if self.action == "stop":
-                self.client.stop_container(name)
+                for n in names:
+                    self.client.stop_container(n)
             elif self.action == "start":
-                self.client.start_container(name)
+                for n in names:
+                    self.client.start_container(n)
             elif self.action == "restart":
-                self.client.restart_container(name)
+                for n in names:
+                    self.client.restart_container(n)
             elif self.action == "remove":
-                self.client.remove_container(name)
-                if self.image_tag:
-                    self.client.remove_image(self.image_tag)
-            status = None if self.action == "remove" else self.client.container_status(name)
-            self.done.emit(self.machine, self.action, status)
+                # Solo lo de este lab: contenedores + redes pivoting + imágenes (nunca el resto del sistema)
+                self.client.teardown_lab(self.slug, image_tags=self.image_tags)
+            statuses = [] if self.action == "remove" else self.client.statuses_for(names)
+            self.done.emit(self.machine, self.action, statuses)
         except LabError as exc:
             self.failed.emit(self.machine, self.action, str(exc))
         except Exception as exc:  # noqa: BLE001
@@ -354,25 +365,30 @@ class LabController(QObject):
 
     def remove(self, machine: str, remove_image: bool = True) -> None:
         st = self._labs.get(machine)
-        tag = ""
+        tags: List[str] = []
         if st and remove_image:
-            tag = st.image.repo_tag if st.image else (st.container.image if st.container else "")
-        self._action(machine, "remove", image_tag=tag)
+            tags = [i.repo_tag for i in st.images] or [c.image for c in st.containers if c.image]
+            if not tags and st.image:
+                tags = [st.image.repo_tag]
+        self._action(machine, "remove", image_tags=tags)
 
     def stop_all(self) -> None:
         """Parada sincrónica de todos los labs en marcha (al cerrar la app)."""
         for st in self.running_labs():
-            try:
-                self.client.stop_container(st.container_name, timeout=5)
-            except LabError as exc:
-                logger.warning("stop_all %s: %s", st.machine, exc)
+            for name in st.container_names:
+                try:
+                    self.client.stop_container(name, timeout=5)
+                except LabError as exc:
+                    logger.warning("stop_all %s/%s: %s", st.machine, name, exc)
 
-    def open_shell(self, machine: str) -> bool:
-        """Abre una terminal del sistema con `docker exec -it`."""
+    def open_shell(self, machine: str, index: int = 0) -> bool:
+        """Abre una terminal del sistema con `docker exec -it` (índice = máquina del lab de pivoting)."""
         st = self._labs.get(machine)
         if st is None:
             return False
-        return open_in_terminal(self.client.exec_shell_command(st.container_name))
+        names = st.container_names
+        name = names[index] if 0 <= index < len(names) else names[0]
+        return open_in_terminal(self.client.exec_shell_command(name))
 
     def shutdown(self) -> None:
         for w in list(self._workers):
@@ -403,29 +419,42 @@ class LabController(QObject):
             self.refresh_containers()
 
     def _on_refresh_done(self, containers: list) -> None:
-        seen: set[str] = set()
+        # Agrupamos por lab (label slug; fallback: nombre) — los labs de pivoting tienen N contenedores.
+        groups: Dict[str, List[ContainerStatus]] = {}
         for c in containers:
-            machine = c.machine
+            slug = c.slug or self._slug_from_container_name(c.name)
+            groups.setdefault(slug, []).append(c)
+        seen: set[str] = set()
+        for slug, cs in groups.items():
+            cs.sort(key=lambda c: c.name)
+            machine = cs[0].machine
             seen.add(machine)
             st = self._labs.get(machine)
             if st is None:
-                st = LabState(machine=machine, slug=c.name.replace(CONTAINER_PREFIX, "", 1))
+                st = LabState(machine=machine, slug=slug)
                 self._labs[machine] = st
             if st.busy:
                 continue
-            st.container = c
-            st.phase = "running" if c.is_running else "stopped"
-            if c.ports:
+            running = any(c.is_running for c in cs)
+            st.phase = "running" if running else "stopped"
+            if any(c.ports for c in cs):
                 st.strategy = "bridge+ports"
             elif st.strategy == "bridge":
                 st.strategy = self.strategy_for_current_platform()
-            st.access_text = describe_access(c, st.strategy)
+            st.set_containers(cs)
         # Labs que ya no existen en Docker (borrados fuera de la app)
         for machine in list(self._labs):
             st = self._labs[machine]
             if machine not in seen and not st.busy and st.phase in ("running", "stopped"):
                 del self._labs[machine]
         self.list_changed.emit()
+
+    @staticmethod
+    def _slug_from_container_name(name: str) -> str:
+        base = name.replace(CONTAINER_PREFIX, "", 1)
+        # dockerlabs_grandma_2 → grandma
+        head, sep, tail = base.rpartition("_")
+        return head if sep and tail.isdigit() else base
 
     def _on_phase(self, machine: str, phase: str) -> None:
         st = self._labs.get(machine)
@@ -449,16 +478,18 @@ class LabController(QObject):
         st = self._labs.get(machine)
         if st:
             st.image = image
+            if image not in st.images:
+                st.images.append(image)
             self.lab_changed.emit(machine)
 
-    def _on_launched(self, machine: str, status: ContainerStatus, strategy: str) -> None:
+    def _on_launched(self, machine: str, statuses: object, strategy: str) -> None:
         st = self._labs.get(machine)
         if st is None:
             return
-        st.container = status
-        st.phase = "running" if status.is_running else "stopped"
+        sts: List[ContainerStatus] = list(statuses) if isinstance(statuses, (list, tuple)) else [statuses]  # type: ignore[list-item]
         st.strategy = strategy
-        st.access_text = describe_access(status, strategy)
+        st.set_containers(sts)
+        st.phase = "running" if any(c.is_running for c in sts) else "stopped"
         st.error = ""
         self.lab_changed.emit(machine)
         self.list_changed.emit()
@@ -474,27 +505,29 @@ class LabController(QObject):
         self.list_changed.emit()
         self.lab_failed.emit(machine, error)
 
-    def _action(self, machine: str, action: str, image_tag: str = "") -> None:
+    def _action(self, machine: str, action: str, image_tags: Sequence[str] = ()) -> None:
         st = self._labs.get(machine)
         if st is None or st.busy:
             return
         st.phase = {"stop": "stopping", "remove": "removing"}.get(action, "starting")
         self.lab_changed.emit(machine)
-        w = _ActionWorker(self.client, machine, st.slug, action, image_tag, parent=self)
+        names = [c.name for c in st.containers]
+        w = _ActionWorker(self.client, machine, st.slug, action, image_tags=image_tags, names=names,
+                          parent=self)
         w.done.connect(self._on_action_done)
         w.failed.connect(self._on_action_failed)
         self._track(w)
 
-    def _on_action_done(self, machine: str, action: str, status) -> None:
+    def _on_action_done(self, machine: str, action: str, statuses) -> None:
         st = self._labs.get(machine)
         if st is None:
             return
-        if action == "remove" or status is None:
+        sts: List[ContainerStatus] = list(statuses or [])
+        if action == "remove" or not sts:
             self._labs.pop(machine, None)
         else:
-            st.container = status
-            st.phase = "running" if status.is_running else "stopped"
-            st.access_text = describe_access(status, st.strategy)
+            st.set_containers(sts)
+            st.phase = "running" if any(c.is_running for c in sts) else "stopped"
         self.lab_changed.emit(machine)
         self.list_changed.emit()
         self.lab_action_done.emit(machine, action)
