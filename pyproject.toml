@@ -39,6 +39,7 @@ py-modules = [
     "catalog",
     "completed_store",
     "workers",
+    "session_controller",
 ]
 packages = ["widgets"]
 
