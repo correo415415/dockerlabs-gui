@@ -156,7 +156,10 @@ class MachineDetailPanel(QFrame):
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setStyleSheet("QScrollArea { background: transparent; }")
         host = QWidget()
-        host.setStyleSheet("background: transparent;")
+        host.setObjectName("detailHost")
+        # Con selector: una regla sin selector se hereda por todos los hijos y pisaba
+        # el fondo de los botones `primary` (se veían grises como si estuvieran deshabilitados).
+        host.setStyleSheet("QWidget#detailHost { background: transparent; }")
         lay = QVBoxLayout(host)
         lay.setContentsMargins(16, 4, 16, 16)
         lay.setSpacing(12)
@@ -287,21 +290,6 @@ class MachineDetailPanel(QFrame):
         self.btn_more_wu.setText(f"  Ver {extra} más en la web" if extra > 0 else "  Ver todos en la web")
         self._refresh_buttons()
         self.setVisible(True)
-        self._repolish()
-
-    def _repolish(self) -> None:
-        """Fuerza reevaluar el QSS (selector `QPushButton.primary`) la primera vez que se muestra.
-
-        Los botones se crean con el panel oculto y Qt no siempre aplica los selectores por
-        propiedad `class` hasta que se repule el estilo.
-        """
-        if getattr(self, "_polished", False):
-            return
-        self._polished = True
-        for b in self.findChildren(QPushButton):
-            st = b.style()
-            st.unpolish(b)
-            st.polish(b)
 
     def set_status(self, done: bool, downloading: bool, downloaded: bool, running: bool) -> None:
         self._status = dict(done=done, downloading=downloading, downloaded=downloaded, running=running)
