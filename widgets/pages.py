@@ -677,9 +677,11 @@ class MachinesPage(QWidget):
             self.loading.setVisible(True)
             self.empty.setVisible(False)
             self.table.setVisible(False)
+            self.lbl_count.setText("Cargando…")
         elif not loading and not self.model.rowCount():
             self.loading.setVisible(False)
             self.empty.setVisible(True)
+            self.lbl_count.setText("Sin catálogo")
 
     @property
     def is_loading(self) -> bool:
@@ -739,7 +741,7 @@ class MachinesPage(QWidget):
         dl = sum(1 for n in self.names if n in self._downloaded)
         self.lbl_count.setText(
             f"{shown} de {total} máquinas · {done} completadas · {dl} descargadas"
-            if total else "Sin catálogo"
+            if total else ("Cargando…" if self.loading.isVisible() else "Sin catálogo")
         )
         if total and shown == 0:
             self.empty.setText("Ninguna máquina coincide con los filtros.")
