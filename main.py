@@ -318,6 +318,7 @@ class MainWindow(QMainWindow):
         self.page_downloads.request_cancel.connect(self._cancel_download)
         self.page_downloads.request_remove.connect(self._remove_download)
         self.page_downloads.request_open.connect(self._open_download_folder)
+        self.page_downloads.request_clear_finished.connect(self.downloads.clear_finished)
         self.page_machines.request_launch.connect(self._launch_lab)
         self.page_machines.request_refresh_catalog.connect(self._refresh_catalog)
         self.page_lab.request_action.connect(self._lab_action)
@@ -329,6 +330,8 @@ class MainWindow(QMainWindow):
         self.page_session.request_login.connect(self._do_login)
         self.page_session.request_logout.connect(self._do_logout)
         self.page_completed.request_refresh.connect(self._refresh_completed)
+        self.page_completed.request_toggle_completed.connect(self._toggle_completed)
+        self.page_completed.request_open_machine.connect(self._open_machine_detail)
         self.page_settings.request_change_downloads_dir.connect(self._set_downloads_dir)
         self.page_settings.request_set_os_notifications.connect(self._set_os_notifications)
         self.page_settings.request_set_in_app_notifications.connect(self._set_in_app_notifications)
@@ -440,6 +443,7 @@ class MainWindow(QMainWindow):
         self.catalog = cat
         self.page_machines.set_catalog(cat)
         self.page_dashboard.set_catalog(cat, self._completed)
+        self.page_completed.set_catalog(cat)
         self._reconcile_downloads_with_catalog()
 
     def _on_catalog_refreshed(self, cat) -> None:
@@ -931,6 +935,11 @@ class MainWindow(QMainWindow):
     def _focus_search(self) -> None:
         self._go("machines")
         self.page_machines.focus_search()
+
+    def _open_machine_detail(self, name: str) -> None:
+        """Navega al catálogo y abre el panel de detalle de `name` (desde Completadas, Laboratorio…)."""
+        self._go("machines")
+        self.page_machines.show_detail(name)
 
     # ---- Laboratorio (Docker) ----
 

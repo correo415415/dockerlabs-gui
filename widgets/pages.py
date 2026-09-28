@@ -921,6 +921,7 @@ class DownloadsPage(QWidget):
     request_cancel = pyqtSignal(str)
     request_remove = pyqtSignal(str)
     request_open = pyqtSignal(str)
+    request_clear_finished = pyqtSignal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -936,16 +937,39 @@ class DownloadsPage(QWidget):
         body.setContentsMargins(24, 16, 24, 24)
         body.setSpacing(10)
 
+        top = QHBoxLayout()
+        top.setSpacing(10)
         self.lbl_summary = QLabel("Sin descargas")
         self.lbl_summary.setStyleSheet(f"color: {FG_MUTED};")
-        body.addWidget(self.lbl_summary)
+        self.btn_clear = QPushButton("  Limpiar terminadas")
+        self.btn_clear.setProperty("class", "ghost")
+        self.btn_clear.setIcon(svg_icon("trash", FG_SECONDARY, 15))
+        self.btn_clear.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_clear.setToolTip("Quita de la lista las descargas completadas, fallidas o canceladas")
+        self.btn_clear.setEnabled(False)
+        self.btn_clear.clicked.connect(self.request_clear_finished.emit)
+        top.addWidget(self.lbl_summary)
+        top.addStretch(1)
+        top.addWidget(self.btn_clear)
+        body.addLayout(top)
 
-        # contenedor de items
-        self.list_host = QFrame()
+        # contenedor de items dentro de un scroll (muchas descargas no deben desbordar la vista)
+        from PyQt6.QtWidgets import QScrollArea
+
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll.setStyleSheet("QScrollArea { background: transparent; }")
+        self.list_host = QWidget()
+        self.list_host.setObjectName("downloadsHost")
+        self.list_host.setStyleSheet("QWidget#downloadsHost { background: transparent; }")
         self.list_layout = QVBoxLayout(self.list_host)
-        self.list_layout.setContentsMargins(0, 0, 0, 0)
+        self.list_layout.setContentsMargins(0, 0, 6, 0)
         self.list_layout.setSpacing(10)
-        body.addWidget(self.list_host, 1)
+        self.list_layout.addStretch(1)
+        self.scroll.setWidget(self.list_host)
+        body.addWidget(self.scroll, 1)
 
         self.empty = QLabel(
             "Aún no hay descargas. Ve a Máquinas, haz clic derecho sobre una y elige\n"
@@ -977,14 +1001,17 @@ class DownloadsPage(QWidget):
                 w.open_clicked.connect(self.request_open.emit)
                 w.remove_clicked.connect(self.request_remove.emit)
                 self._widgets[state.machine] = w
-                self.list_layout.addWidget(w)
+                self.list_layout.insertWidget(self.list_layout.count() - 1, w)   # antes del stretch
             w.update_state(state)
 
         n = len(states)
         active = sum(1 for s in states if s.state in ("running", "verifying", "queued"))
         done = sum(1 for s in states if s.state == "done")
+        finished = n - active
         self.empty.setVisible(n == 0)
-        self.list_host.setVisible(n > 0)
+        self.scroll.setVisible(n > 0)
+        self.btn_clear.setEnabled(finished > 0)
+        self.btn_clear.setText(f"  Limpiar terminadas ({finished})" if finished else "  Limpiar terminadas")
         if n == 0:
             self.lbl_summary.setText("Sin descargas")
         else:
@@ -998,10 +1025,18 @@ class DownloadsPage(QWidget):
 # ============================================================
 
 class CompletedPage(QWidget):
+    """Máquinas completadas: búsqueda, agrupación por dificultad y desmarcar."""
+
     request_refresh = pyqtSignal()
+    request_toggle_completed = pyqtSignal(str)
+    request_open_machine = pyqtSignal(str)
+
+    ROLE_NAME = Qt.ItemDataRole.UserRole + 1
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
+        self._names: list = []
+        self._catalog = None
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
@@ -1013,10 +1048,22 @@ class CompletedPage(QWidget):
         body.setSpacing(12)
 
         top = QHBoxLayout()
+        top.setSpacing(10)
         self.lbl = QLabel("Inicia sesión para sincronizar.")
         self.lbl.setStyleSheet(f"color: {FG_SECONDARY};")
         top.addWidget(self.lbl, 1)
-        self.btn_refresh = QPushButton("Sincronizar")
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Buscar…")
+        self.search.setClearButtonEnabled(True)
+        self.search.setFixedWidth(220)
+        self.search.textChanged.connect(self._rebuild)
+        top.addWidget(self.search)
+        self.chk_group = QCheckBox("Agrupar por dificultad")
+        self.chk_group.setChecked(True)
+        self.chk_group.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self.chk_group.toggled.connect(self._rebuild)
+        top.addWidget(self.chk_group)
+        self.btn_refresh = QPushButton("  Sincronizar")
         self.btn_refresh.setProperty("class", "primary")
         self.btn_refresh.setIcon(svg_icon("refresh", "#0b1316", 16))
         self.btn_refresh.setMinimumHeight(34)
@@ -1028,29 +1075,118 @@ class CompletedPage(QWidget):
         self.list_widget.setStyleSheet(
             f"QListWidget {{ background: {BG_MID}; border: 1px solid #2a2f3a;"
             f" border-radius: 12px; padding: 8px; color: {FG_PRIMARY}; }}"
-            f"QListWidget::item {{ padding: 8px 12px; border: none; }}"
+            f"QListWidget::item {{ padding: 8px 12px; border: none; border-radius: 6px; }}"
+            f"QListWidget::item:selected {{ background: {BG_LIGHT}; }}"
         )
+        self.list_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.list_widget.customContextMenuRequested.connect(self._context_menu)
+        self.list_widget.itemDoubleClicked.connect(self._on_double_click)
         body.addWidget(self.list_widget, 1)
+
+        hint = QLabel("Doble clic abre la máquina en el catálogo · clic derecho para desmarcar.")
+        hint.setStyleSheet(f"color: {FG_MUTED}; font-size: 11px;")
+        body.addWidget(hint)
 
         wrap = QFrame(); wrap.setLayout(body)
         root.addWidget(wrap, 1)
 
+    # ------------------------------------------------------------------ API
+    def set_catalog(self, catalog) -> None:
+        self._catalog = catalog
+        self._rebuild()
+
     def set_items(self, names) -> None:
+        self._names = sorted(set(names or []), key=str.lower)
+        self._rebuild()
+
+    @property
+    def names(self) -> list:
+        return list(self._names)
+
+    # ------------------------------------------------------------------ interno
+    def _difficulty(self, name: str) -> str:
+        if self._catalog is None:
+            return ""
+        m = self._catalog.by_name().get(name)
+        return m.difficulty if m else ""
+
+    def _rebuild(self) -> None:
         self.list_widget.clear()
-        names = list(names)
-        if not names:
-            it = QListWidgetItem("Sin máquinas completadas")
-            it.setForeground(QColor(FG_MUTED))
-            it.setFlags(Qt.ItemFlag.NoItemFlags)
-            self.list_widget.addItem(it)
+        q = self.search.text().strip().lower()
+        names = [n for n in self._names if q in n.lower()]
+        total = len(self._names)
+        if total == 0:
+            self._add_placeholder("Sin máquinas completadas")
             self.lbl.setText("0 máquinas completadas")
             return
-        for n in sorted(names, key=str.lower):
-            it = QListWidgetItem(f"  {n}")
-            it.setIcon(svg_icon("check", ACCENT, 16))
-            it.setForeground(QColor(FG_PRIMARY))
-            self.list_widget.addItem(it)
-        self.lbl.setText(f"{len(names)} máquinas completadas")
+        self.lbl.setText(f"{total} máquinas completadas" + (f" · {len(names)} coinciden" if q else ""))
+        if not names:
+            self._add_placeholder(f"Ninguna completada coincide con «{self.search.text().strip()}»")
+            return
+        group = self.chk_group.isChecked() and self._catalog is not None
+        if not group:
+            for n in names:
+                self._add_machine(n)
+            return
+        from catalog import DIFFICULTY_ORDER
+
+        buckets: Dict[str, list] = {d: [] for d in DIFFICULTY_ORDER}
+        buckets[""] = []
+        for n in names:
+            buckets.setdefault(self._difficulty(n), []).append(n)
+        for d in list(DIFFICULTY_ORDER) + [""]:
+            items = buckets.get(d) or []
+            if not items:
+                continue
+            self._add_group_header(d or "Sin clasificar", len(items), difficulty_color(d) if d else FG_MUTED)
+            for n in items:
+                self._add_machine(n, indent=True)
+
+    def _add_placeholder(self, text: str) -> None:
+        it = QListWidgetItem(text)
+        it.setForeground(QColor(FG_MUTED))
+        it.setFlags(Qt.ItemFlag.NoItemFlags)
+        self.list_widget.addItem(it)
+
+    def _add_group_header(self, title: str, count: int, color: str) -> None:
+        it = QListWidgetItem(f"{title}  ·  {count}")
+        it.setForeground(QColor(color))
+        f = it.font(); f.setBold(True); it.setFont(f)
+        it.setFlags(Qt.ItemFlag.NoItemFlags)
+        self.list_widget.addItem(it)
+
+    def _add_machine(self, name: str, indent: bool = False) -> None:
+        it = QListWidgetItem(("      " if indent else "  ") + name)
+        it.setIcon(svg_icon("check", ACCENT, 16))
+        it.setForeground(QColor(FG_PRIMARY))
+        it.setData(self.ROLE_NAME, name)
+        d = self._difficulty(name)
+        if d:
+            it.setToolTip(f"{name} · {d}")
+        self.list_widget.addItem(it)
+
+    def _item_name(self, item) -> str:
+        return str(item.data(self.ROLE_NAME) or "") if item is not None else ""
+
+    def _on_double_click(self, item) -> None:
+        n = self._item_name(item)
+        if n:
+            self.request_open_machine.emit(n)
+
+    def _context_menu(self, pos: QPoint) -> None:
+        item = self.list_widget.itemAt(pos)
+        n = self._item_name(item)
+        if not n:
+            return
+        menu = QMenu(self)
+        act_open = QAction(svg_icon("machines", FG_PRIMARY, 14), "Ver en el catálogo", menu)
+        act_open.triggered.connect(lambda: self.request_open_machine.emit(n))
+        act_undo = QAction(svg_icon("x", DANGER, 14), "Desmarcar como completada", menu)
+        act_undo.triggered.connect(lambda: self.request_toggle_completed.emit(n))
+        menu.addAction(act_open)
+        menu.addSeparator()
+        menu.addAction(act_undo)
+        menu.exec(self.list_widget.viewport().mapToGlobal(pos))
 
 
 # ============================================================
