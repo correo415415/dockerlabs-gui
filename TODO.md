@@ -164,13 +164,13 @@ Implementado en `lab_manager.py` (núcleo sin Qt, testeable), `lab_controller.py
       `QT_QPA_PLATFORM=offscreen`.
 - [x] `pyproject.toml`: bump versión, dependencias, `ruff` config; `requirements.txt`.
 - [x] README actualizado (sin MEGA, con Docker, permisos Linux, requisitos por SO).
-- [~] CI GitHub Actions: workflow listo en `ci/ci.yml` (moverlo a `.github/workflows/` — el token del asistente no tiene permiso `workflows`).
+- [x] CI GitHub Actions (`ci.yml`: ruff + pytest en ubuntu/windows/macos, sin caché) y `release.yml` (PyInstaller → assets del GitHub Release al crear un tag `v*`).
 
 ## 5. Ideas futuras (no bloqueantes)  `[ ]`
 
 - [ ] Writeups: abrir lista y enviar writeup (`/api/submit_writeup`) desde la app.
 - [ ] Puntuar máquina (`/api/rate_machine`) tras marcarla como completada.
-- [ ] Empaquetado: PyInstaller (Win/mac/Linux) + AppImage.
+- [x] Empaquetado: PyInstaller (Win/mac/Linux) vía `release.yml` + `packaging/build.py` (AppImage pendiente).
 - [ ] Comprobación de nuevas versiones de la app desde GitHub Releases.
 - [ ] Soporte Podman como alternativa a Docker.
 - [ ] Modo "pentest": crear red dedicada `dockerlabs-net` y abrir terminal con la IP exportada.
