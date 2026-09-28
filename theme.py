@@ -444,6 +444,31 @@ QCheckBox::indicator:checked:hover {{ background: {ACCENT_HOVER}; border-color: 
 QCheckBox::indicator:disabled {{ background: {BORDER_SOFT}; border-color: {BORDER_SOFT}; }}
 QCheckBox::indicator:checked:disabled {{ background: {ACCENT_DIM}; border-color: {ACCENT_DIM}; }}
 
+QRadioButton {{
+    color: {FG_PRIMARY};
+    spacing: 10px;
+    padding: 4px 0;
+}}
+QRadioButton::indicator {{
+    width: 18px;
+    height: 18px;
+    border-radius: 9px;
+    border: 1px solid {BORDER};
+    background: {BG_LIGHT};
+}}
+QRadioButton::indicator:hover {{ border: 1px solid {ACCENT_DIM}; }}
+QRadioButton::indicator:checked {{
+    border: 6px solid {ACCENT};
+    background: {ON_ACCENT};
+    width: 8px;
+    height: 8px;
+}}
+QRadioButton::indicator:checked:hover {{ border-color: {ACCENT_HOVER}; }}
+QRadioButton::indicator:disabled {{ background: {BORDER_SOFT}; border-color: {BORDER_SOFT}; }}
+QRadioButton:disabled {{ color: {FG_MUTED}; }}
+
+QDialog {{ background: {BG_DARK}; }}
+
 QPushButton.danger {{
     background: transparent;
     border: 1px solid {DANGER};

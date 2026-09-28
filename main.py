@@ -188,6 +188,7 @@ class MainWindow(QMainWindow):
         self.page_lab.request_go_machines.connect(lambda: self._go("machines"))
         self.page_lab.request_grant_access.connect(self._grant_docker_access)
         self.page_lab.request_start_service.connect(self._start_docker_service)
+        self.page_lab.request_forget_sudo.connect(self._forget_sudo)
         self.page_settings.request_set_docker_network.connect(self._set_docker_network)
         self.page_session.request_login.connect(self.session.login)
         self.page_session.request_logout.connect(self.session.logout)
@@ -601,12 +602,32 @@ class MainWindow(QMainWindow):
     # ---- Permisos de Docker (Linux: pkexec / sudo -A) ----
 
     def _grant_docker_access(self) -> None:
+        """Abre el diálogo con las dos opciones (sudo recomendado / grupo docker)."""
         info = self.labs.docker_info
         if not info.needs_elevation:
             self.notify("No hace falta", "Tu usuario ya puede usar Docker.", kind="info")
             return
-        if not self.labs.grant_access():
+        if self.labs.elevating:
             self.notify("Ya hay una autorización en curso", kind="info")
+            return
+        if not (info.can_sudo or info.can_elevate):
+            self.notify("Sin permiso para usar Docker",
+                        "Ejecuta como administrador: usermod -aG docker $USER (y reinicia sesión)",
+                        kind="error")
+            return
+        from widgets.docker_access_dialog import CHOICE_GROUP, CHOICE_SUDO, ask_docker_access
+        choice, password = ask_docker_access(self, can_sudo=info.can_sudo,
+                                             can_elevate=info.can_elevate, error=info.error)
+        if choice == CHOICE_SUDO:
+            if not self.labs.use_sudo(password):
+                self.notify("Ya hay una autorización en curso", kind="info")
+        elif choice == CHOICE_GROUP:
+            if not self.labs.grant_access():
+                self.notify("Ya hay una autorización en curso", kind="info")
+
+    def _forget_sudo(self) -> None:
+        self.labs.forget_sudo()
+        self.notify("sudo desactivado", "Docker volverá a ejecutarse con tu usuario.", kind="info")
 
     def _start_docker_service(self) -> None:
         if not self.labs.start_service():
@@ -617,7 +638,8 @@ class MainWindow(QMainWindow):
 
     def _on_elevation_done(self, action: str, ok: bool, detail: str) -> None:
         self.page_lab.set_elevating(False)
-        titles = {"grant": "Acceso a Docker", "start_service": "Servicio Docker"}
+        titles = {"grant": "Acceso a Docker", "start_service": "Servicio Docker",
+                  "sudo": "Docker con sudo"}
         title = titles.get(action, action)
         if ok:
             self.notify(title, detail.splitlines()[0] if detail else "Hecho", kind="success")
@@ -645,20 +667,8 @@ class MainWindow(QMainWindow):
             return
         if info.needs_elevation:
             self._go("lab")
-            if info.can_elevate:
-                res = QMessageBox.question(
-                    self, "Permiso para usar Docker",
-                    "Tu usuario no puede usar Docker sin sudo.\n\n"
-                    "¿Conceder acceso ahora? Se abrirá el diálogo de autenticación del sistema "
-                    "y se añadirá tu usuario al grupo docker.",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                )
-                if res == QMessageBox.StandardButton.Yes:
-                    self._grant_docker_access()
-            else:
-                self.notify("Sin permiso para usar Docker",
-                            "Ejecuta: sudo usermod -aG docker $USER (y reinicia sesión)",
-                            kind="error")
+            # Diálogo con las dos opciones (sudo recomendado / grupo docker)
+            self._grant_docker_access()
             return
         if not info.running:
             self.notify("Docker no responde", (info.error or "").splitlines()[0], kind="error")
