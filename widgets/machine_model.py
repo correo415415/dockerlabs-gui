@@ -15,6 +15,7 @@ from PyQt6.QtCore import (
     QSize,
     QSortFilterProxyModel,
     Qt,
+    pyqtSignal,
 )
 from PyQt6.QtGui import QColor, QFont, QPainter, QPen
 from PyQt6.QtWidgets import QStyledItemDelegate, QStyleOptionViewItem
@@ -44,6 +45,13 @@ ROLE_DONE = Qt.ItemDataRole.UserRole + 4
 
 
 class MachineTableModel(QAbstractTableModel):
+    # Se emite cuando cambia alguno de los conjuntos de estado (completadas,
+    # descargando, descargadas, en ejecución). `dataChanged` repinta las celdas,
+    # pero el proxy no re-evalúa el *filtro* ni el *orden* con él: sin esta señal,
+    # con el filtro «Descargadas» activo una máquina recién bajada no aparecía
+    # hasta tocar el buscador.
+    states_changed = pyqtSignal()
+
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._rows: List[Machine] = []
@@ -82,9 +90,10 @@ class MachineTableModel(QAbstractTableModel):
             return
         if len(rows) > 40:   # muchos cambios: un solo dataChanged de rango
             self.dataChanged.emit(self.index(rows[0], 0), self.index(rows[-1], COL_DATE))
-            return
-        for r in rows:
-            self.dataChanged.emit(self.index(r, 0), self.index(r, COL_DATE))
+        else:
+            for r in rows:
+                self.dataChanged.emit(self.index(r, 0), self.index(r, COL_DATE))
+        self.states_changed.emit()
 
     def set_completed(self, names) -> None:
         self._set_names("completed", names)
@@ -204,6 +213,24 @@ class MachineFilterProxy(QSortFilterProxyModel):
         self.state = "Todas"   # Todas | Completadas | Pendientes | Descargadas | En ejecución
         self.setSortRole(ROLE_SORT)
         self.setDynamicSortFilter(True)
+
+    def setSourceModel(self, model) -> None:  # noqa: N802
+        old = self.sourceModel()
+        if isinstance(old, MachineTableModel):
+            try:
+                old.states_changed.disconnect(self._on_states_changed)
+            except (TypeError, RuntimeError):
+                pass
+        super().setSourceModel(model)
+        if isinstance(model, MachineTableModel):
+            model.states_changed.connect(self._on_states_changed)
+
+    def _on_states_changed(self) -> None:
+        # Re-filtrar (y re-ordenar si se ordena por estado) sin reconstruir la tabla.
+        if self.state != "Todas":
+            self.invalidateFilter()
+        elif self.sortColumn() in (COL_DONE, COL_STATE):
+            self.invalidate()
 
     def set_query(self, q: str) -> None:
         self.query = (q or "").strip()

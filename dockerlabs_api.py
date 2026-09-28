@@ -74,7 +74,11 @@ class DockerLabsClient:
         # Reintenta sólo errores de conexión (antes de enviar nada, seguro para POST).
         retry = Retry(total=2, connect=2, read=0, status=0, backoff_factor=0.3,
                       allowed_methods=None, raise_on_status=False)
-        adapter = HTTPAdapter(max_retries=retry, pool_connections=4, pool_maxsize=4)
+        # Varios hilos (catálogo, imágenes, valoraciones, avatares…) comparten la
+        # sesión; con un pool pequeño urllib3 avisaba "Connection pool is full,
+        # discarding connection" y abría conexiones nuevas cada vez.
+        adapter = HTTPAdapter(max_retries=retry, pool_connections=4, pool_maxsize=16,
+                              pool_block=False)
         self.session.mount("https://", adapter)
         self.session.mount("http://", adapter)
         self._csrf_token: Optional[str] = None

@@ -727,6 +727,8 @@ class MachinesPage(QWidget):
         self._downloaded = set(names or [])
         self.model.set_downloaded(self._downloaded)
         self._update_count(); self._push_status_to_detail()
+        # Repintado inmediato de la tabla (sin esperar al siguiente evento de la vista)
+        self.table.viewport().update()
 
     def set_running(self, names) -> None:
         self._running = set(names or [])
