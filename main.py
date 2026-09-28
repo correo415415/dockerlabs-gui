@@ -356,7 +356,7 @@ class MainWindow(QMainWindow):
         # estén visibles desde el principio.
         self.page_machines.set_completed(self._completed)
         self.page_completed.set_items(self._completed)
-        self.page_dashboard.set_done(len(self._completed))
+        self.page_dashboard.set_completed(self._completed)
 
         self._load_cached_catalog()
         self._refresh_catalog()
@@ -439,9 +439,7 @@ class MainWindow(QMainWindow):
     def _apply_catalog(self, cat) -> None:
         self.catalog = cat
         self.page_machines.set_catalog(cat)
-        self.page_dashboard.set_total(len(cat.machines))
-        if hasattr(self.page_dashboard, "set_catalog"):
-            self.page_dashboard.set_catalog(cat, self._completed)
+        self.page_dashboard.set_catalog(cat, self._completed)
         self._reconcile_downloads_with_catalog()
 
     def _on_catalog_refreshed(self, cat) -> None:
@@ -540,7 +538,7 @@ class MainWindow(QMainWindow):
         self._completed = set(local_user)
         self.page_machines.set_completed(self._completed)
         self.page_completed.set_items(self._completed)
-        self.page_dashboard.set_done(len(self._completed))
+        self.page_dashboard.set_completed(self._completed)
         self.page_session.update_stats(len(self._completed))
         # Sincronizar con servidor en background
         self._sync_completed_with_server()
@@ -583,7 +581,7 @@ class MainWindow(QMainWindow):
         self._completed = self._completed_store.all_for_user(None)
         self.sidebar.set_logged_out()
         self.page_dashboard.set_session(None)
-        self.page_dashboard.set_done(len(self._completed))
+        self.page_dashboard.set_completed(self._completed)
         self.page_machines.set_completed(self._completed)
         self.page_completed.set_items(self._completed)
         self.page_session.set_logged_out()
@@ -624,7 +622,7 @@ class MainWindow(QMainWindow):
             self._completed_store.set_for_user(self._username, self._completed)
         self.page_machines.set_completed(self._completed)
         self.page_completed.set_items(self._completed)
-        self.page_dashboard.set_done(len(self._completed))
+        self.page_dashboard.set_completed(self._completed)
         self.page_session.update_stats(len(self._completed))
         if pushed:
             self.statusBar().showMessage(
@@ -644,7 +642,7 @@ class MainWindow(QMainWindow):
         self._completed = set(names)
         self.page_machines.set_completed(self._completed)
         self.page_completed.set_items(self._completed)
-        self.page_dashboard.set_done(len(self._completed))
+        self.page_dashboard.set_completed(self._completed)
         self.statusBar().showMessage(f"{len(self._completed)} máquinas completadas")
 
     def _toggle_completed(self, name: str) -> None:
@@ -665,7 +663,7 @@ class MainWindow(QMainWindow):
                             kind="info")
             self.page_machines.set_completed(self._completed)
             self.page_completed.set_items(self._completed)
-            self.page_dashboard.set_done(len(self._completed))
+            self.page_dashboard.set_completed(self._completed)
             return
         self.statusBar().showMessage(f"Alternando estado de {name}…")
         worker = ToggleWorker(self.client, name, parent=self)
@@ -686,7 +684,7 @@ class MainWindow(QMainWindow):
                 self._completed_store.remove(self._username, name)
         self.page_machines.set_completed(self._completed)
         self.page_completed.set_items(self._completed)
-        self.page_dashboard.set_done(len(self._completed))
+        self.page_dashboard.set_completed(self._completed)
         self.page_session.update_stats(len(self._completed))
         verb_long  = "marcada como completada" if new_state else "desmarcada"
         verb_short = "Completada" if new_state else "Desmarcada"

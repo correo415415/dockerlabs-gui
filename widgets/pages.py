@@ -34,12 +34,14 @@ from theme import (
     ACCENT,
     BG_LIGHT,
     BG_MID,
+    BORDER_SOFT,
     DANGER,
     FG_MUTED,
     FG_PRIMARY,
     FG_SECONDARY,
     SUCCESS,
     WARNING,
+    difficulty_color,
 )
 from widgets.avatar import AvatarCircle
 from widgets.icons import icon as svg_icon
@@ -163,6 +165,132 @@ def page_header(title: str, subtitle: str) -> QFrame:
 # Dashboard
 # ============================================================
 
+
+class _Panel(QFrame):
+    body: QVBoxLayout
+
+
+def _panel(title: str) -> _Panel:
+    f = _Panel()
+    f.setObjectName("dashPanel")
+    f.setStyleSheet(
+        f"QFrame#dashPanel {{ background: {BG_MID}; border: 1px solid {BORDER_SOFT}; border-radius: 12px; }}"
+    )
+    lay = QVBoxLayout(f)
+    lay.setContentsMargins(18, 14, 18, 16)
+    lay.setSpacing(10)
+    t = QLabel(title)
+    t.setStyleSheet(f"font-size: 13px; font-weight: 700; color: {FG_PRIMARY}; background: transparent;")
+    lay.addWidget(t)
+    f.body = lay
+    return f
+
+
+def _muted(text: str) -> QLabel:
+    lb = QLabel(text)
+    lb.setStyleSheet(f"color: {FG_MUTED}; font-size: 11px; background: transparent;")
+    lb.setWordWrap(True)
+    return lb
+
+
+def _clear_layout(lay) -> None:
+    while lay.count():
+        it = lay.takeAt(0)
+        w = it.widget()
+        if w is not None:
+            w.hide()
+            w.setParent(None)
+            w.deleteLater()
+
+
+class _DiffRow(QWidget):
+    """Fila `● Dificultad  3/40` con mini barra de progreso coloreada."""
+
+    def __init__(self, difficulty: str, parent=None) -> None:
+        super().__init__(parent)
+        color = difficulty_color(difficulty)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(3)
+        top = QHBoxLayout()
+        top.setSpacing(6)
+        dot = QLabel("●")
+        dot.setStyleSheet(f"color: {color}; font-size: 10px; background: transparent;")
+        name = QLabel(difficulty)
+        name.setStyleSheet(f"color: {FG_SECONDARY}; font-size: 12px; background: transparent;")
+        self.lbl_count = QLabel("—")
+        self.lbl_count.setStyleSheet(f"color: {FG_PRIMARY}; font-size: 12px; font-weight: 600; background: transparent;")
+        top.addWidget(dot)
+        top.addWidget(name)
+        top.addStretch(1)
+        top.addWidget(self.lbl_count)
+        self.bar = QProgressBar()
+        self.bar.setRange(0, 100)
+        self.bar.setTextVisible(False)
+        self.bar.setFixedHeight(6)
+        self.bar.setStyleSheet(
+            f"QProgressBar {{ background: {BG_LIGHT}; border: 0; border-radius: 3px; }}"
+            f"QProgressBar::chunk {{ background: {color}; border-radius: 3px; }}"
+        )
+        lay.addLayout(top)
+        lay.addWidget(self.bar)
+
+    def set_values(self, done: int, total: int) -> None:
+        self.lbl_count.setText(f"{done}/{total}")
+        self.bar.setValue(int(round(100 * done / total)) if total else 0)
+
+
+class _LatestRow(QFrame):
+    def __init__(self, m, done: bool, parent=None) -> None:
+        super().__init__(parent)
+        self.setStyleSheet("background: transparent;")
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 2, 0, 2)
+        lay.setSpacing(10)
+        dot = QLabel("●")
+        dot.setStyleSheet(f"color: {difficulty_color(m.difficulty)}; font-size: 10px;")
+        name = QLabel(m.name)
+        name.setStyleSheet(f"color: {FG_PRIMARY}; font-size: 12px; font-weight: 600;")
+        diff = QLabel(m.difficulty)
+        diff.setStyleSheet(f"color: {FG_MUTED}; font-size: 11px;")
+        author = QLabel(m.author or "")
+        author.setStyleSheet(f"color: {FG_SECONDARY}; font-size: 11px;")
+        date = QLabel(m.date or "")
+        date.setStyleSheet(f"color: {FG_MUTED}; font-size: 11px;")
+        lay.addWidget(dot)
+        lay.addWidget(name)
+        lay.addWidget(diff)
+        if done:
+            ok = QLabel("✓")
+            ok.setStyleSheet(f"color: {SUCCESS}; font-weight: 800; font-size: 12px;")
+            ok.setToolTip("Completada")
+            lay.addWidget(ok)
+        lay.addStretch(1)
+        lay.addWidget(author)
+        lay.addWidget(date)
+
+
+class _RankRow(QFrame):
+    def __init__(self, pos: int, name: str, count: int, parent=None) -> None:
+        super().__init__(parent)
+        self.setStyleSheet("background: transparent;")
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 2, 0, 2)
+        lay.setSpacing(10)
+        medal = {1: "#facc15", 2: "#cbd5e1", 3: "#d97706"}.get(pos, FG_MUTED)
+        num = QLabel(f"{pos}.")
+        num.setFixedWidth(20)
+        num.setStyleSheet(f"color: {medal}; font-weight: 800; font-size: 12px;")
+        lbl = QLabel(name)
+        lbl.setStyleSheet(f"color: {FG_PRIMARY}; font-size: 12px;")
+        cnt = QLabel(f"{count} máquinas")
+        cnt.setStyleSheet(f"color: {FG_SECONDARY}; font-size: 11px;")
+        lay.addWidget(num)
+        lay.addWidget(lbl)
+        lay.addStretch(1)
+        lay.addWidget(cnt)
+
+
 class DashboardPage(QWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -189,36 +317,100 @@ class DashboardPage(QWidget):
         grid.addWidget(self.card_session, 0, 4)
         content.addLayout(grid)
 
-        hello = QFrame()
-        hello.setObjectName("helloCard")
-        hello.setStyleSheet(
-            f"QFrame#helloCard {{ background: {BG_MID}; border: 1px solid #2a2f3a;"
-            f" border-radius: 12px; }}"
+        # --- Progreso global ---------------------------------------------------
+        prog = _panel("Tu progreso")
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        self.progress.setTextVisible(False)
+        self.progress.setFixedHeight(10)
+        self.progress.setStyleSheet(
+            f"QProgressBar {{ background: {BG_LIGHT}; border: 0; border-radius: 5px; }}"
+            f"QProgressBar::chunk {{ background: {ACCENT}; border-radius: 5px; }}"
         )
-        hl = QVBoxLayout(hello)
-        hl.setContentsMargins(20, 18, 20, 18)
-        hl.setSpacing(6)
-        title = QLabel("Bienvenido a DockerLabs GUI")
-        title.setStyleSheet(f"font-size: 16px; font-weight: 700; color: {FG_PRIMARY};")
-        body = QLabel(
-            "Cliente de escritorio para DockerLabs. Usa el menú lateral para navegar:\n"
-            "• Máquinas: catálogo con búsqueda + clic derecho para marcar como hecha o descargar.\n"
-            "• Descargas: progreso en tiempo real de las máquinas que estás bajando.\n"
-            "• Laboratorio: lanza las máquinas descargadas en Docker y gestiona los contenedores.\n"
-            "• Completadas: máquinas marcadas como hechas en tu cuenta.\n"
-            "• Sesión: inicia sesión para sincronizar tu progreso y obtener tu avatar.\n\n"
-            "El catálogo se actualiza automáticamente al iniciar (si hay internet)."
-        )
-        body.setStyleSheet(f"color: {FG_SECONDARY}; font-size: 13px;")
-        body.setWordWrap(True)
-        hl.addWidget(title)
-        hl.addWidget(body)
-        content.addWidget(hello)
+        self.lbl_progress = QLabel("Cargando catálogo…")
+        self.lbl_progress.setStyleSheet(f"color: {FG_SECONDARY}; font-size: 12px; background: transparent;")
+        prog.body.addWidget(self.lbl_progress)
+        prog.body.addWidget(self.progress)
+        self.diff_rows: Dict[str, "_DiffRow"] = {}
+        diff_grid = QGridLayout()
+        diff_grid.setHorizontalSpacing(14)
+        diff_grid.setVerticalSpacing(6)
+        for i, d in enumerate(("Muy Fácil", "Fácil", "Medio", "Difícil")):
+            row = _DiffRow(d)
+            self.diff_rows[d] = row
+            diff_grid.addWidget(row, i // 2, i % 2)
+        prog.body.addLayout(diff_grid)
+        content.addWidget(prog)
 
-        content.addItem(QSpacerItem(0, 0, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding))
+        # --- Últimas máquinas + ranking ------------------------------------------
+        cols = QHBoxLayout()
+        cols.setSpacing(14)
+        self.panel_latest = _panel("Últimas máquinas publicadas")
+        self.latest_host = QVBoxLayout()
+        self.latest_host.setSpacing(4)
+        self.panel_latest.body.addLayout(self.latest_host)
+        self.panel_latest.body.addStretch(1)
+        self.panel_ranking = _panel("Top creadores")
+        self.ranking_host = QVBoxLayout()
+        self.ranking_host.setSpacing(4)
+        self.panel_ranking.body.addLayout(self.ranking_host)
+        self.panel_ranking.body.addStretch(1)
+        cols.addWidget(self.panel_latest, 3)
+        cols.addWidget(self.panel_ranking, 2)
+        content.addLayout(cols, 1)
+        for host in (self.latest_host, self.ranking_host):
+            lb = QLabel("Sin datos todavía — el catálogo se carga al iniciar (F5 para actualizar).")
+            lb.setStyleSheet(f"color: {FG_MUTED}; font-size: 11px; background: transparent;")
+            lb.setWordWrap(True)
+            host.addWidget(lb)
+
         wrap = QFrame()
         wrap.setLayout(content)
         root.addWidget(wrap, 1)
+        self._catalog = None
+        self._completed: set = set()
+
+    # ------------------------------------------------------------------ catálogo
+    def set_catalog(self, catalog, completed=None) -> None:
+        """Rellena progreso, desglose por dificultad, últimas máquinas y ranking."""
+        self._catalog = catalog
+        if completed is not None:
+            self._completed = set(completed)
+        total = len(catalog.machines)
+        names = set(catalog.names())
+        done = len(self._completed & names) if names else len(self._completed)
+        self.set_total(total)
+        self.set_done(len(self._completed))
+        pct = int(round(100 * done / total)) if total else 0
+        self.progress.setValue(pct)
+        self.lbl_progress.setText(
+            f"<b style='color:{FG_PRIMARY}'>{done}</b> de {total} máquinas completadas · {pct}%"
+            if total else "Catálogo vacío"
+        )
+        by_all = catalog.counts_by_difficulty()
+        by_done = catalog.counts_by_difficulty(self._completed)
+        for d, row in self.diff_rows.items():
+            row.set_values(by_done.get(d, 0), by_all.get(d, 0))
+
+        _clear_layout(self.latest_host)
+        for m in catalog.latest(6):
+            self.latest_host.addWidget(_LatestRow(m, m.name in self._completed))
+        if not catalog.machines:
+            self.latest_host.addWidget(_muted("El catálogo está vacío."))
+
+        _clear_layout(self.ranking_host)
+        ranking = sorted(catalog.ranking_creators, key=lambda r: -int(r.get("maquinas", 0) or 0))[:6]
+        for i, r in enumerate(ranking, 1):
+            self.ranking_host.addWidget(_RankRow(i, str(r.get("nombre", "—")), int(r.get("maquinas", 0) or 0)))
+        if not ranking:
+            self.ranking_host.addWidget(_muted("Sin ranking disponible."))
+
+    def set_completed(self, completed) -> None:
+        self._completed = set(completed or [])
+        if self._catalog is not None:
+            self.set_catalog(self._catalog)
+        self.set_done(len(self._completed))
 
     def set_total(self, n: int) -> None:
         self.card_total.value_label.setText(str(n))
