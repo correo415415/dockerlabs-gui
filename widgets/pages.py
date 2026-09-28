@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QSpacerItem,
+    QSpinBox,
     QStyledItemDelegate,
     QStyleOptionViewItem,
     QVBoxLayout,
@@ -1376,6 +1377,7 @@ class SettingsPage(QWidget):
     request_set_in_app_notifications = pyqtSignal(bool)
     request_open_downloads_dir = pyqtSignal()
     request_set_docker_network = pyqtSignal(str)
+    request_set_max_concurrent = pyqtSignal(int)
 
     DOCKER_NET_OPTIONS = [
         ("auto", "Automático (recomendado)"),
@@ -1434,6 +1436,27 @@ class SettingsPage(QWidget):
         self.btn_open.clicked.connect(self.request_open_downloads_dir.emit)
         row_dir.addWidget(self.btn_open)
         cdl.addLayout(row_dir)
+
+        row_conc = QHBoxLayout()
+        row_conc.setSpacing(10)
+        lbl_conc = QLabel("Descargas simultáneas")
+        lbl_conc.setStyleSheet(f"color: {FG_PRIMARY}; font-size: 12px;")
+        self.spin_concurrent = QSpinBox()
+        self.spin_concurrent.setRange(1, 6)
+        self.spin_concurrent.setValue(2)
+        self.spin_concurrent.setFixedWidth(84)
+        self.spin_concurrent.setButtonSymbols(QSpinBox.ButtonSymbols.PlusMinus)
+        self.spin_concurrent.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.spin_concurrent.setMinimumHeight(32)
+        self.spin_concurrent.setToolTip("Número máximo de máquinas descargándose a la vez; el resto espera en cola")
+        self.spin_concurrent.valueChanged.connect(self.request_set_max_concurrent.emit)
+        hint_conc = QLabel("El servidor de DockerLabs a veces devuelve errores 500 bajo carga: 2 es un buen valor.")
+        hint_conc.setStyleSheet(f"color: {FG_MUTED}; font-size: 11px;")
+        hint_conc.setWordWrap(True)
+        row_conc.addWidget(lbl_conc)
+        row_conc.addWidget(self.spin_concurrent)
+        row_conc.addWidget(hint_conc, 1)
+        cdl.addLayout(row_conc)
         body.addWidget(card_dir)
 
         # ---------- Notificaciones ----------
@@ -1483,9 +1506,9 @@ class SettingsPage(QWidget):
         card_info = self._make_card("Información")
         cil = card_info.layout()
         info = QLabel(
-            "• Datos cacheados en: ~/.dockerlabs-gui/\n"
-            "• El catálogo se actualiza automáticamente al arrancar si hay internet.\n"
-            "• Si no hay conexión, se carga el último CSV disponible.\n"
+            "• Datos cacheados en: ~/.dockerlabs-gui/ (catálogo, ajustes, logs).\n"
+            "• El catálogo se actualiza automáticamente al arrancar si hay internet (F5 para forzar).\n"
+            "• Si no hay conexión, se carga el último catálogo guardado (catalog.json).\n"
             "• Los labs se extraen en ~/.dockerlabs-gui/labs/<máquina>/ y los contenedores se llaman dockerlabs_<máquina>."
         )
         info.setStyleSheet(f"color: {FG_SECONDARY}; font-size: 12px;")
@@ -1516,8 +1539,11 @@ class SettingsPage(QWidget):
 
     def set_state(self, downloads_dir: str, os_notifications: bool,
                   in_app_notifications: bool, os_backend_available: bool,
-                  docker_network: str = "auto") -> None:
+                  docker_network: str = "auto", max_concurrent: int = 2) -> None:
         self._current_dir = downloads_dir
+        self.spin_concurrent.blockSignals(True)
+        self.spin_concurrent.setValue(max(1, min(6, int(max_concurrent or 2))))
+        self.spin_concurrent.blockSignals(False)
         self.combo_docker_net.blockSignals(True)
         idx = self.combo_docker_net.findData(docker_network or "auto")
         self.combo_docker_net.setCurrentIndex(max(0, idx))

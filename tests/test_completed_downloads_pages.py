@@ -82,3 +82,17 @@ def test_downloads_clear_button():
     assert set(page._widgets) == {"a"}
     page.render_states([])
     assert page.empty.isVisibleTo(page) and not page.scroll.isVisibleTo(page)
+
+
+def test_settings_max_concurrent_spinner():
+    from widgets.pages import SettingsPage
+
+    page = SettingsPage()
+    got = []
+    page.request_set_max_concurrent.connect(got.append)
+    page.set_state("/tmp", True, True, False, "auto", max_concurrent=4)
+    assert page.spin_concurrent.value() == 4 and got == []          # set_state no emite
+    page.spin_concurrent.setValue(3)
+    assert got == [3]
+    page.set_state("/tmp", True, True, False, "auto", max_concurrent=99)
+    assert page.spin_concurrent.value() == 6                        # clamp 1..6

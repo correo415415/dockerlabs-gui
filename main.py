@@ -336,6 +336,7 @@ class MainWindow(QMainWindow):
         self.page_settings.request_set_os_notifications.connect(self._set_os_notifications)
         self.page_settings.request_set_in_app_notifications.connect(self._set_in_app_notifications)
         self.page_settings.request_open_downloads_dir.connect(self._open_downloads_dir)
+        self.page_settings.request_set_max_concurrent.connect(self._set_max_concurrent)
 
         self.setCentralWidget(root)
         # No usamos QStatusBar: la barra inferior se sustituye por toasts.
@@ -1082,7 +1083,13 @@ class MainWindow(QMainWindow):
             in_app_notifications=self.settings.in_app_notifications,
             os_backend_available=self._os_backend,
             docker_network=self.settings.docker_network,
+            max_concurrent=self.settings.max_concurrent_downloads,
         )
+
+    def _set_max_concurrent(self, n: int) -> None:
+        self.settings.max_concurrent_downloads = max(1, min(6, int(n)))
+        self.settings_store.save(self.settings)
+        self.downloads.set_max_concurrent(self.settings.max_concurrent_downloads)
 
     def _set_downloads_dir(self, path: str) -> None:
         try:

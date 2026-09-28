@@ -245,6 +245,23 @@ QComboBox QAbstractItemView QScrollBar:horizontal {{
     background: transparent;
 }}
 
+/* ---------- SpinBox ---------- */
+QSpinBox {{
+    background: {BG_LIGHT};
+    border: 1px solid {BORDER};
+    border-radius: 8px;
+    padding: 4px 8px;
+    color: {FG_PRIMARY};
+    selection-background-color: {ACCENT_DIM};
+}}
+QSpinBox:focus {{ border: 1px solid {ACCENT}; }}
+QSpinBox::up-button, QSpinBox::down-button {{
+    width: 18px;
+    background: transparent;
+    border: none;
+}}
+QSpinBox::up-button:hover, QSpinBox::down-button:hover {{ background: {BG_HOVER}; }}
+
 /* ---------- Botones ---------- */
 QPushButton.primary {{
     background: {ACCENT};
