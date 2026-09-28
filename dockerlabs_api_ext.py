@@ -8,12 +8,61 @@ Reusa el cliente urllib + cookiejar que viene en dockerlabs_api.py y añade:
 """
 from __future__ import annotations
 
+import html as html_lib
 import json
 import re
 import urllib.parse
+from html.parser import HTMLParser
 from typing import Optional
 
 from dockerlabs_api import CSRF_META_RE, DockerLabsClient, DockerLabsError
+
+# onclick="presentacion(&#34;Nombre&#34;, &#34;Dificultad&#34;, ...)" -> tras html.unescape
+# queda presentacion("Nombre", "Dificultad", ...). Aceptamos comillas simples o dobles.
+_PRESENTACION_RE = re.compile(r"presentacion\(\s*(['\"])(.*?)\1", re.S)
+
+
+class _CompletedMachinesParser(HTMLParser):
+    """Recoge los nombres de los <div class="maquina-item ... completada"> de la home.
+
+    La home lista cada máquina como:
+        <div onclick="presentacion(&#34;Nombre&#34;, &#34;Medio&#34;, ...)"
+             class="maquina-item ... completada">
+    Usamos html.parser en lugar de una regex para no depender del orden de los
+    atributos ni del escapado exacto de las comillas.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.names: list[str] = []
+        self._seen: set[str] = set()
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, Optional[str]]]) -> None:
+        if tag != "div":
+            return
+        attr = {k.lower(): (v or "") for k, v in attrs}
+        classes = attr.get("class", "").split()
+        if "maquina-item" not in classes or "completada" not in classes:
+            return
+        onclick = html_lib.unescape(attr.get("onclick", ""))
+        m = _PRESENTACION_RE.search(onclick)
+        if not m:
+            return
+        name = m.group(2).strip()
+        if name and name not in self._seen:
+            self._seen.add(name)
+            self.names.append(name)
+
+
+def parse_completed_machines(html: str) -> list[str]:
+    """Devuelve los nombres de máquinas marcadas como completadas en el HTML de la home."""
+    parser = _CompletedMachinesParser()
+    try:
+        parser.feed(html)
+        parser.close()
+    except Exception:  # noqa: BLE001 - HTML roto: devolvemos lo que se haya podido leer
+        pass
+    return parser.names
 
 
 class DockerLabsExtClient(DockerLabsClient):
@@ -147,13 +196,4 @@ class DockerLabsExtClient(DockerLabsClient):
         status, _, body = self._request(self.base_url + "/")
         if status != 200:
             raise DockerLabsError(f"GET / devolvió HTTP {status}")
-        html = body.decode("utf-8", errors="ignore")
-        # Cada máquina aparece en un div con class="maquina-item ... completada"
-        completed: list[str] = []
-        pattern = re.compile(
-            r'<div\s+onclick="presentacion\(&#34;([^&]+)&#34;[^"]*"\s+class="maquina-item[^"]*\bcompletada\b',
-            re.S,
-        )
-        for m in pattern.finditer(html):
-            completed.append(m.group(1))
-        return completed
+        return parse_completed_machines(body.decode("utf-8", errors="ignore"))
