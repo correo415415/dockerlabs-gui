@@ -28,6 +28,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+import theme as _theme
 from app_logging import install_excepthook, setup_logging
 from catalog_controller import CatalogController
 from download_manager import DownloadManager
@@ -35,7 +36,7 @@ from lab_controller import LabController
 from notifier import notify_os, os_backend_available
 from session_controller import SessionController
 from settings_store import SettingsStore, UserSettings
-from theme import QSS
+from theme import DEFAULT_THEME, THEMES, apply_theme
 from widgets.icons import icon as svg_icon
 from widgets.lab_page import LabPage
 from widgets.pages import (
@@ -69,6 +70,14 @@ COMPLETED_FILE = APP_DIR / "completed.json"
 # Workers
 # -----------------------------------------------------------------------------
 
+def _load_theme_pref() -> str:
+    """Lee el tema guardado antes de crear la ventana (para no parpadear)."""
+    try:
+        return SettingsStore(SETTINGS_FILE).load().theme or DEFAULT_THEME
+    except Exception:  # noqa: BLE001
+        return DEFAULT_THEME
+
+
 # -----------------------------------------------------------------------------
 # Main window
 # -----------------------------------------------------------------------------
@@ -78,7 +87,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("DockerLabs GUI")
         self.resize(1180, 760); self.setMinimumSize(960, 620)
-        self.setWindowIcon(svg_icon("machines", "#22d3ee", 64))
+        self.setWindowIcon(svg_icon("machines", _theme.ACCENT, 64))
 
         self.settings_store = SettingsStore(SETTINGS_FILE)
         self.settings: UserSettings = self.settings_store.load()
@@ -88,6 +97,7 @@ class MainWindow(QMainWindow):
         self._os_backend = os_backend_available()
 
         self._workers = WorkerPool()
+        self._restart_requested = False
         # Sesión + completadas viven en su controlador (sin UI). Arranca con
         # las completadas anónimas locales como base.
         self.session = SessionController(ENV_FILE, COMPLETED_FILE, parent=self)
@@ -189,6 +199,7 @@ class MainWindow(QMainWindow):
         self.page_settings.request_set_in_app_notifications.connect(self._set_in_app_notifications)
         self.page_settings.request_open_downloads_dir.connect(self._open_downloads_dir)
         self.page_settings.request_set_max_concurrent.connect(self._set_max_concurrent)
+        self.page_settings.request_set_theme.connect(self._set_theme)
 
         self.setCentralWidget(root)
         # No usamos QStatusBar: la barra inferior se sustituye por toasts.
@@ -718,7 +729,34 @@ class MainWindow(QMainWindow):
             os_backend_available=self._os_backend,
             docker_network=self.settings.docker_network,
             max_concurrent=self.settings.max_concurrent_downloads,
+            theme=self.settings.theme,
         )
+
+    def _set_theme(self, theme: str) -> None:
+        theme = theme if theme in THEMES else DEFAULT_THEME
+        if theme == self.settings.theme and theme == _theme.CURRENT_THEME:
+            return
+        self.settings.theme = theme
+        self.settings_store.save(self.settings)
+        # El QSS global se aplica al instante (tabla, botones, inputs...). Los
+        # estilos inline de paneles ya construidos no cambian: ofrecemos reiniciar.
+        app = QApplication.instance()
+        qss = apply_theme(theme)
+        if app is not None:
+            app.setStyleSheet(qss)
+        self.setWindowIcon(svg_icon("machines", _theme.ACCENT, 64))
+        res = QMessageBox.question(
+            self, "Tema cambiado",
+            "El tema se aplica por completo al reiniciar la aplicación.\n"
+            "¿Reiniciar ahora? (las descargas en curso se cancelarán)",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if res == QMessageBox.StandardButton.Yes:
+            self._restart_requested = True
+            self.close()
+        else:
+            self.notify("Tema guardado", "Se aplicará del todo la próxima vez que abras la app.", kind="info")
 
     def _set_max_concurrent(self, n: int) -> None:
         self.settings.max_concurrent_downloads = max(1, min(6, int(n)))
@@ -796,12 +834,28 @@ def main() -> int:
                 platform.system(), platform.release(), platform.python_version())
     app = QApplication(sys.argv)
     app.setApplicationName("DockerLabs GUI")
-    app.setStyleSheet(QSS)
+    app.setStyleSheet(apply_theme(_load_theme_pref()))
     win = MainWindow()
     install_excepthook(lambda: win)
     win.show()
     logger.debug("log en %s", log_file)
-    return app.exec()
+    code = app.exec()
+    if getattr(win, "_restart_requested", False):
+        _relaunch()
+    return code
+
+
+def _relaunch() -> None:
+    """Relanza la app con el mismo intérprete y argumentos (tras cambiar de tema)."""
+    try:
+        if getattr(sys, "frozen", False):
+            args = [sys.executable, *sys.argv[1:]]
+        else:
+            args = [sys.executable, *sys.argv]
+        logger.info("reiniciando: %s", " ".join(args))
+        subprocess.Popen(args, close_fds=True)  # noqa: S603
+    except Exception:  # noqa: BLE001
+        logger.exception("no se pudo relanzar la aplicación")
 
 
 if __name__ == "__main__":

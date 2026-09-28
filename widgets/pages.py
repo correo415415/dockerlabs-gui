@@ -113,6 +113,38 @@ class _GhostComboBox(QComboBox):
         p.end()
 
 
+def ghost_combo(options: list[tuple[str, str]], min_width: int = 150, height: int = 38) -> QComboBox:
+    """Crea un `_GhostComboBox` con items (data, label) y paleta acorde al tema activo."""
+    from theme import BG_HOVER, BG_MID, FG_PRIMARY
+    combo = _GhostComboBox()
+    for data, label in options:
+        combo.addItem(label, data)
+    combo.setMinimumHeight(height)
+    combo.setMinimumWidth(min_width)
+    combo.setCursor(Qt.CursorShape.PointingHandCursor)
+    pal = combo.palette()
+    mid = QColor(BG_MID)
+    hover = QColor(BG_HOVER)
+    fg = QColor(FG_PRIMARY)
+    for role in (QPalette.ColorRole.Highlight, QPalette.ColorRole.Base,
+                 QPalette.ColorRole.Button, QPalette.ColorRole.Window):
+        pal.setColor(role, mid)
+    pal.setColor(QPalette.ColorRole.HighlightedText, fg)
+    pal.setColor(QPalette.ColorRole.ButtonText, fg)
+    pal.setColor(QPalette.ColorRole.WindowText, fg)
+    pal.setColor(QPalette.ColorRole.Text, fg)
+    combo.setPalette(pal)
+    view = combo.view()
+    view_pal = view.palette()
+    view_pal.setColor(QPalette.ColorRole.Highlight, hover)
+    view_pal.setColor(QPalette.ColorRole.HighlightedText, fg)
+    view_pal.setColor(QPalette.ColorRole.Base, mid)
+    view.setPalette(view_pal)
+    combo.setItemDelegate(_ComboItemDelegate(combo))
+    combo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+    return combo
+
+
 def make_card(title: str, value: str, sub: str = "") -> QFrame:
     card = QFrame()
     card.setProperty("class", "card")
@@ -611,34 +643,7 @@ class MachinesPage(QWidget):
 
     def _make_combo(self, prefix: str, options: list[str]) -> QComboBox:
         """ComboBox 'ghost' que muestra 'prefix: opcion' y se disimula con el tema."""
-        from theme import BG_HOVER, BG_MID, FG_PRIMARY
-        combo = _GhostComboBox()
-        for opt in options:
-            combo.addItem(f"{prefix}: {opt}", opt)
-        combo.setMinimumHeight(38)
-        combo.setMinimumWidth(150)
-        combo.setCursor(Qt.CursorShape.PointingHandCursor)
-        pal = combo.palette()
-        mid = QColor(BG_MID)
-        hover = QColor(BG_HOVER)
-        fg = QColor(FG_PRIMARY)
-        for role in (QPalette.ColorRole.Highlight, QPalette.ColorRole.Base,
-                     QPalette.ColorRole.Button, QPalette.ColorRole.Window):
-            pal.setColor(role, mid)
-        pal.setColor(QPalette.ColorRole.HighlightedText, fg)
-        pal.setColor(QPalette.ColorRole.ButtonText, fg)
-        pal.setColor(QPalette.ColorRole.WindowText, fg)
-        pal.setColor(QPalette.ColorRole.Text, fg)
-        combo.setPalette(pal)
-        view = combo.view()
-        view_pal = view.palette()
-        view_pal.setColor(QPalette.ColorRole.Highlight, hover)
-        view_pal.setColor(QPalette.ColorRole.HighlightedText, fg)
-        view_pal.setColor(QPalette.ColorRole.Base, mid)
-        view.setPalette(view_pal)
-        combo.setItemDelegate(_ComboItemDelegate(combo))
-        combo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        return combo
+        return ghost_combo([(opt, f"{prefix}: {opt}") for opt in options], min_width=150)
 
     # ---- API pública ----
 
@@ -1375,6 +1380,12 @@ class SettingsPage(QWidget):
     request_open_downloads_dir = pyqtSignal()
     request_set_docker_network = pyqtSignal(str)
     request_set_max_concurrent = pyqtSignal(int)
+    request_set_theme = pyqtSignal(str)
+
+    THEME_OPTIONS = [
+        ("dark", "Oscuro (por defecto)"),
+        ("light", "Claro"),
+    ]
 
     DOCKER_NET_OPTIONS = [
         ("auto", "Automático (recomendado)"),
@@ -1493,15 +1504,37 @@ class SettingsPage(QWidget):
         sub_dk.setStyleSheet(f"color: {FG_MUTED}; font-size: 12px;")
         sub_dk.setWordWrap(True)
         cdk.addWidget(sub_dk)
-        self.combo_docker_net = QComboBox()
-        for key, label in self.DOCKER_NET_OPTIONS:
-            self.combo_docker_net.addItem(label, key)
-        self.combo_docker_net.setMinimumHeight(36)
+        self.combo_docker_net = ghost_combo(self.DOCKER_NET_OPTIONS, min_width=320, height=36)
+        self.combo_docker_net.setStyleSheet(
+            f"QComboBox {{ background: {BG_LIGHT}; border: 1px solid {BORDER_SOFT}; }}")
         self.combo_docker_net.currentIndexChanged.connect(
             lambda _i: self.request_set_docker_network.emit(self.combo_docker_net.currentData() or "auto")
         )
         cdk.addWidget(self.combo_docker_net)
         body.addWidget(card_docker)
+
+        # ---------- Apariencia ----------
+        card_theme = self._make_card("Apariencia")
+        ctl = card_theme.layout()
+        row_theme = QHBoxLayout()
+        row_theme.setSpacing(10)
+        lbl_theme = QLabel("Tema")
+        lbl_theme.setStyleSheet(f"color: {FG_PRIMARY}; font-size: 12px;")
+        self.combo_theme = ghost_combo(self.THEME_OPTIONS, min_width=220, height=36)
+        self.combo_theme.currentIndexChanged.connect(
+            lambda _i: self.request_set_theme.emit(self.combo_theme.currentData() or "dark")
+        )
+        self.lbl_theme_hint = QLabel(
+            "El cambio se aplica al instante a la mayoría de la interfaz; "
+            "algunos paneles ya abiertos se repintan por completo al reiniciar."
+        )
+        self.lbl_theme_hint.setStyleSheet(f"color: {FG_MUTED}; font-size: 11px;")
+        self.lbl_theme_hint.setWordWrap(True)
+        row_theme.addWidget(lbl_theme)
+        row_theme.addWidget(self.combo_theme)
+        row_theme.addWidget(self.lbl_theme_hint, 1)
+        ctl.addLayout(row_theme)
+        body.addWidget(card_theme)
 
         # ---------- Info técnica ----------
         card_info = self._make_card("Información")
@@ -1518,8 +1551,16 @@ class SettingsPage(QWidget):
         body.addWidget(card_info)
 
         body.addItem(QSpacerItem(0, 0, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding))
-        wrap = QFrame(); wrap.setLayout(body)
-        root.addWidget(wrap, 1)
+        wrap = QFrame(); wrap.setObjectName("settingsBody"); wrap.setLayout(body)
+        from PyQt6.QtWidgets import QScrollArea
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setStyleSheet("QScrollArea { background: transparent; }"
+                             " QScrollArea > QWidget > QWidget#settingsBody { background: transparent; }")
+        scroll.setWidget(wrap)
+        root.addWidget(scroll, 1)
 
     def _make_card(self, title: str) -> QFrame:
         card = QFrame()
@@ -1540,8 +1581,13 @@ class SettingsPage(QWidget):
 
     def set_state(self, downloads_dir: str, os_notifications: bool,
                   in_app_notifications: bool, os_backend_available: bool,
-                  docker_network: str = "auto", max_concurrent: int = 2) -> None:
+                  docker_network: str = "auto", max_concurrent: int = 2,
+                  theme: str = "dark") -> None:
         self._current_dir = downloads_dir
+        self.combo_theme.blockSignals(True)
+        t_idx = self.combo_theme.findData(theme or "dark")
+        self.combo_theme.setCurrentIndex(max(0, t_idx))
+        self.combo_theme.blockSignals(False)
         self.spin_concurrent.blockSignals(True)
         self.spin_concurrent.setValue(max(1, min(6, int(max_concurrent or 2))))
         self.spin_concurrent.blockSignals(False)
