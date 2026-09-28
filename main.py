@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Optional
 
 from PyQt6.QtCore import QThread, QUrl, pyqtSignal
-from PyQt6.QtGui import QCloseEvent, QDesktopServices
+from PyQt6.QtGui import QCloseEvent, QDesktopServices, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QApplication,
     QHBoxLayout,
@@ -29,6 +29,7 @@ from PyQt6.QtWidgets import (
 )
 
 from app_logging import install_excepthook, setup_logging
+from catalog import CatalogStore
 from completed_store import CompletedStore
 from dockerlabs_api import (
     AuthResult,
@@ -50,7 +51,6 @@ from widgets.pages import (
     CompletedPage,
     DashboardPage,
     DownloadsPage,
-    ExportWorker,
     MachinesPage,
     SessionPage,
     SettingsPage,
@@ -61,20 +61,32 @@ from widgets.toast import ToastManager
 logger = logging.getLogger(__name__)
 
 
+class CatalogWorker(QThread):
+    """Descarga /api en segundo plano y actualiza la caché JSON."""
+    done = pyqtSignal(object)   # Catalog
+    failed = pyqtSignal(str)
+
+    def __init__(self, store: CatalogStore, client, parent=None) -> None:
+        super().__init__(parent)
+        self.store = store
+        self.client = client
+
+    def run(self) -> None:
+        try:
+            self.done.emit(self.store.refresh(self.client.fetch_api_data))
+        except Exception as exc:  # noqa: BLE001
+            self.failed.emit(str(exc))
+
+
 APP_DIR = Path.home() / ".dockerlabs-gui"
 APP_DIR.mkdir(parents=True, exist_ok=True)
-CSV_DIR = APP_DIR / "csv"
-CSV_DIR.mkdir(parents=True, exist_ok=True)
+CATALOG_FILE = APP_DIR / "catalog.json"
 DEFAULT_DOWNLOADS_DIR = APP_DIR / "downloads"
 DEFAULT_DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
 LABS_DIR = APP_DIR / "labs"
 SETTINGS_FILE = APP_DIR / "settings.json"
-DEFAULT_CSV = CSV_DIR / "dockerlabs_maquinas.csv"
 ENV_FILE = APP_DIR / ".env"
 COMPLETED_FILE = APP_DIR / "completed.json"
-
-# Compat con la versión anterior
-LEGACY_CSV = Path.home() / ".dockerlabs-qt" / "csv" / "dockerlabs_maquinas.csv"
 
 
 # -----------------------------------------------------------------------------
@@ -274,7 +286,10 @@ class MainWindow(QMainWindow):
 
         # páginas
         self.page_dashboard = DashboardPage()
-        self.page_machines = MachinesPage(DEFAULT_CSV)
+        self.catalog_store = CatalogStore(CATALOG_FILE)
+        self.catalog = None
+        self._catalog_worker = None
+        self.page_machines = MachinesPage(client=self.client)
         self.page_downloads = DownloadsPage()
         self.page_lab = LabPage()
         self.page_completed = CompletedPage()
@@ -304,6 +319,7 @@ class MainWindow(QMainWindow):
         self.page_downloads.request_remove.connect(self._remove_download)
         self.page_downloads.request_open.connect(self._open_download_folder)
         self.page_machines.request_launch.connect(self._launch_lab)
+        self.page_machines.request_refresh_catalog.connect(self._refresh_catalog)
         self.page_lab.request_action.connect(self._lab_action)
         self.page_lab.request_refresh.connect(self._refresh_docker)
         self.page_lab.request_go_machines.connect(lambda: self._go("machines"))
@@ -342,8 +358,9 @@ class MainWindow(QMainWindow):
         self.page_completed.set_items(self._completed)
         self.page_dashboard.set_done(len(self._completed))
 
-        self._load_cached_csv()
-        self._refresh_csv_background()
+        self._load_cached_catalog()
+        self._refresh_catalog()
+        self._install_shortcuts()
         self._refresh_downloaded_state()
         # Auto-login si hay sesión guardada
         self._try_restore_session()
@@ -392,50 +409,52 @@ class MainWindow(QMainWindow):
             except Exception as exc:  # noqa: BLE001
                 logger.warning("notificación del SO: %s", exc)
 
-    # ---- CSV ----
+    # ---- Catálogo ----
 
-    def _load_cached_csv(self) -> None:
-        loaded = False
-        if DEFAULT_CSV.exists():
-            self.page_machines.load_csv(DEFAULT_CSV)
-            loaded = True
-        elif LEGACY_CSV.exists():
-            self.page_machines.load_csv(LEGACY_CSV)
-            loaded = True
+    def _load_cached_catalog(self) -> None:
+        cat = self.catalog_store.load_cached()
+        if cat is not None:
+            self._apply_catalog(cat)
         else:
-            self.page_machines.lbl_count.setText("Sin CSV. Descargando catálogo…")
-        self._update_totals_from_csv()
-        # Cruzar archivos de la carpeta de descargas con los nombres reales
-        # del CSV para que las maquinas ya bajadas aparezcan como
-        # 'descargadas' y no se vuelvan a descargar.
-        if loaded:
-            self._reconcile_downloads_with_csv()
+            self.page_machines.set_loading(True, "Descargando catálogo…")
 
-    def _refresh_csv_background(self) -> None:
-        worker = ExportWorker(self.client, str(CSV_DIR), "dockerlabs", parent=self)
-        worker.done.connect(self._on_csv_refreshed)
-        worker.failed.connect(self._on_csv_refresh_failed)
-        worker.finished.connect(lambda: self._workers.remove(worker)
-                                if worker in self._workers else None)
+    def _refresh_catalog(self) -> None:
+        if self._catalog_worker is not None:
+            return
+        self.page_machines.set_loading(True)
+        worker = CatalogWorker(self.catalog_store, self.client, parent=self)
+        worker.done.connect(self._on_catalog_refreshed)
+        worker.failed.connect(self._on_catalog_refresh_failed)
+        worker.finished.connect(self._on_catalog_worker_finished)
+        self._catalog_worker = worker
         self._workers.append(worker); worker.start()
-        self.statusBar().showMessage("Actualizando catálogo…")
 
-    def _on_csv_refreshed(self, summary: dict) -> None:
-        path = Path(summary["files"]["machines_csv"])
-        self.page_machines.load_csv(path)
-        self._update_totals_from_csv()
-        self.statusBar().showMessage(
-            f"Catálogo actualizado · {summary['machine_count']} máquinas"
-        )
-        self._reconcile_downloads_with_csv()
+    def _on_catalog_worker_finished(self) -> None:
+        w = self._catalog_worker
+        if w in self._workers:
+            self._workers.remove(w)
+        self._catalog_worker = None
+        self.page_machines.set_loading(False)
 
-    def _on_csv_refresh_failed(self, err: str) -> None:
-        msg = "Sin conexión: usando catálogo cacheado"
-        if not DEFAULT_CSV.exists() and not LEGACY_CSV.exists():
-            msg = f"Sin internet y sin CSV cacheado: {err}"
-            self.page_machines.lbl_count.setText(msg)
-            self.notify("Sin catálogo", msg, kind="warning")
-        self.statusBar().showMessage(msg)
+    def _apply_catalog(self, cat) -> None:
+        self.catalog = cat
+        self.page_machines.set_catalog(cat)
+        self.page_dashboard.set_total(len(cat.machines))
+        if hasattr(self.page_dashboard, "set_catalog"):
+            self.page_dashboard.set_catalog(cat, self._completed)
+        self._reconcile_downloads_with_catalog()
+
+    def _on_catalog_refreshed(self, cat) -> None:
+        self._apply_catalog(cat)
+        logger.info("catálogo actualizado: %d máquinas", len(cat.machines))
+
+    def _on_catalog_refresh_failed(self, err: str) -> None:
+        logger.warning("catálogo: %s", err)
+        if self.catalog is None:
+            self.page_machines.set_catalog(None)
+            self.notify("Sin catálogo", f"Sin internet y sin caché: {err}", kind="warning")
+        else:
+            self.notify("Sin conexión", "Usando el catálogo cacheado", kind="info")
 
     # ---- Sesión ----
 
@@ -890,19 +909,30 @@ class MainWindow(QMainWindow):
         self.page_machines.set_downloaded(downloaded)
         self.page_dashboard.set_downloads(len(downloaded))
 
-    def _reconcile_downloads_with_csv(self) -> None:
-        """Cruza los archivos en la carpeta de descargas con los nombres
-        reales del CSV. Tras esto, las máquinas ya bajadas aparecen como
-        descargadas en la lista de Máquinas, pero NO en la página
-        'Descargas' (esa solo muestra las de la sesión actual)."""
+    def _reconcile_downloads_with_catalog(self) -> None:
+        """Cruza los archivos de la carpeta de descargas con los nombres reales
+        del catálogo para marcar como descargadas las máquinas ya bajadas."""
         try:
-            rows = getattr(self.page_machines, "_all_rows", [])
-            names = [r.get("nombre", "") for r in rows if r.get("nombre")]
+            names = self.page_machines.names
             if names:
                 self.downloads.reconcile_with_catalog(names)
         except Exception:  # noqa: BLE001
             logger.exception("reconcile_with_catalog")
         self._refresh_downloaded_state()
+
+    # ---- Atajos de teclado ----
+
+    def _install_shortcuts(self) -> None:
+        keys = ["dashboard", "machines", "downloads", "lab", "completed", "settings", "about"]
+        for i, key in enumerate(keys, start=1):
+            QShortcut(QKeySequence(f"Ctrl+{i}"), self, activated=lambda k=key: self._go(k))
+        QShortcut(QKeySequence.StandardKey.Find, self, activated=self._focus_search)
+        QShortcut(QKeySequence("F5"), self, activated=self._refresh_catalog)
+        QShortcut(QKeySequence("Escape"), self, activated=self.page_machines.close_detail)
+
+    def _focus_search(self) -> None:
+        self._go("machines")
+        self.page_machines.focus_search()
 
     # ---- Laboratorio (Docker) ----
 
@@ -1077,12 +1107,8 @@ class MainWindow(QMainWindow):
 
     # ---- Totales ----
 
-    def _update_totals_from_csv(self) -> None:
-        try:
-            n = len(self.page_machines._all_rows)  # noqa: SLF001
-            self.page_dashboard.set_total(n)
-        except (AttributeError, TypeError) as exc:
-            logger.debug("update_totals: %s", exc)
+    def _update_totals(self) -> None:
+        self.page_dashboard.set_total(len(self.page_machines.names))
 
     # ---- Cierre ----
 
