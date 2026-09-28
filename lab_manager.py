@@ -822,13 +822,26 @@ class DockerClient:
     def run_container(self, image: ImageInfo, machine: str, slug: str,
                       ports: Sequence[PortMapping] = (),
                       network_mode: str = "bridge",
-                      extra_args: Sequence[str] = ()) -> str:
-        name = container_name_for(slug)
+                      extra_args: Sequence[str] = (),
+                      name: str = "",
+                      network: str = "") -> str:
+        """`docker run -d` equivalente al del auto_deploy.sh oficial.
+
+        * `name`    → nombre del contenedor (por defecto dockerlabs_<slug>).
+        * `network` → red concreta (labs de pivoting); si no, bridge/host.
+        * En hosts ARM se añade `--platform linux/amd64` como hace el script.
+        """
+        name = name or container_name_for(slug)
         self.remove_container(name)  # limpieza previa (como auto_deploy.sh)
         cmd = ["run", "-d", "--name", name,
                "--label", f"{LABEL_KEY}=1",
-               "--label", f"{LABEL_MACHINE}={machine}"]
-        if network_mode == "host":
+               "--label", f"{LABEL_MACHINE}={machine}",
+               "--label", f"{LABEL_SLUG}={slug}"]
+        if needs_amd64_emulation(image):
+            cmd += ["--platform", "linux/amd64"]
+        if network:
+            cmd += ["--network", network]
+        elif network_mode == "host":
             cmd += ["--network", "host"]
         else:
             for pm in ports:
@@ -837,6 +850,61 @@ class DockerClient:
         cmd.append(image.repo_tag)
         out = self._docker(*cmd, timeout=120)
         return out.strip()
+
+    # ---------- redes (labs de pivoting) ----------
+
+    def network_exists(self, name: str) -> bool:
+        out = self._docker("network", "inspect", name, check=False, timeout=20).strip()
+        return out.startswith("[") and out != "[]"
+
+    def create_network(self, spec: NetworkSpec) -> None:
+        if self.network_exists(spec.name):
+            self.remove_network(spec.name)   # el script oficial también la recrea
+        self._docker(*spec.create_args(), timeout=60)
+
+    def remove_network(self, name: str) -> None:
+        self._docker("network", "rm", name, check=False, timeout=60)
+
+    def connect_network(self, network: str, container: str) -> None:
+        self._docker("network", "connect", network, container, timeout=60)
+
+    def list_lab_networks(self, slug: str = "") -> List[str]:
+        """Redes creadas por la app (etiquetadas); opcionalmente solo las de un lab."""
+        out = self._docker("network", "ls", "--filter", f"label={LABEL_KEY}=1",
+                           "--format", "{{.Name}}", check=False)
+        names = [n for n in out.split() if n]
+        if slug:
+            pref = f"{container_name_for(slug)}_"
+            names = [n for n in names if n.startswith(pref)]
+        return names
+
+    def container_names_for_slug(self, slug: str) -> List[str]:
+        """Contenedores de un lab (uno o varios) — SOLO los creados por la app."""
+        out = self._docker("ps", "-a", "--filter", f"label={LABEL_SLUG}={slug}",
+                           "--format", "{{.Names}}", check=False)
+        names = [n for n in out.split() if n]
+        if not names:
+            # compat: contenedores creados antes de existir LABEL_SLUG
+            base = container_name_for(slug)
+            out = self._docker("ps", "-a", "--filter", f"label={LABEL_KEY}=1",
+                               "--format", "{{.Names}}", check=False)
+            names = [n for n in out.split() if n == base or n.startswith(base + "_")]
+        return sorted(names, key=_natural_key)
+
+    def teardown_lab(self, slug: str, image_tags: Sequence[str] = ()) -> None:
+        """Borra contenedores, redes e imágenes **de este lab únicamente**.
+
+        El `auto_deploy.sh` de los labs de pivoting hace `docker rm $(docker ps -aq)`:
+        se lleva por delante cualquier contenedor del usuario. Aquí solo tocamos lo
+        etiquetado por la app para este slug.
+        """
+        for name in self.container_names_for_slug(slug):
+            self.remove_container(name)
+        for net in self.list_lab_networks(slug):
+            self.remove_network(net)
+        for tag in image_tags:
+            if tag:
+                self.remove_image(tag)
 
     def stop_container(self, name: str, timeout: int = 10) -> None:
         self._docker("stop", "-t", str(timeout), name, check=False, timeout=timeout + 20)
@@ -859,6 +927,17 @@ class DockerClient:
         if not data:
             return None
         return self._parse_inspect(data[0])
+
+    def statuses_for(self, names: Sequence[str]) -> List[ContainerStatus]:
+        names = [n for n in names if n]
+        if not names:
+            return []
+        raw = self._docker("inspect", *names, check=False, timeout=30)
+        try:
+            data = json.loads(raw or "[]")
+        except json.JSONDecodeError:
+            return []
+        return [self._parse_inspect(d) for d in data]
 
     def list_lab_containers(self) -> List[ContainerStatus]:
         out = self._docker("ps", "-a", "-q", "--filter", f"label={LABEL_KEY}=1",
@@ -903,6 +982,7 @@ class DockerClient:
                 except ValueError:
                     continue
         ports.sort(key=lambda p: p.container_port)
+        ips = {k: (v.get("IPAddress") or "") for k, v in (net.get("Networks") or {}).items()}
         return ContainerStatus(
             name=name,
             machine=labels.get(LABEL_MACHINE) or name.replace(CONTAINER_PREFIX, "", 1),
@@ -911,6 +991,8 @@ class DockerClient:
             ip=ip,
             ports=ports,
             container_id=(d.get("Id") or "")[:12],
+            slug=labels.get(LABEL_SLUG) or "",
+            network_ips=ips,
         )
 
 
@@ -959,6 +1041,95 @@ def choose_network_strategy(info: DockerInfo, preferred: str = "auto") -> str:
             return "bridge+ports"
         return preferred
     return "bridge" if info.bridge_ip_reachable else "bridge+ports"
+
+
+def deploy_plan(client: DockerClient, plan: DeployPlan,
+                on_phase: Optional[Callable[[str], None]] = None,
+                on_line: Optional[Callable[[str], None]] = None,
+                cancel: Optional[Callable[[], bool]] = None,
+                tar_paths: Sequence[Path] = ()) -> List[ContainerStatus]:
+    """Ejecuta un `DeployPlan` igual que haría `auto_deploy.sh`.
+
+    Un tar → `docker run -d --name dockerlabs_<slug>` (+ puertos/host según estrategia).
+    N tars → crea redes pivotingN (etiquetadas, con prefijo del lab), arranca cada
+             contenedor en su red y lo conecta a la siguiente (cadena de pivoting).
+    Si algo falla a medias se deshace lo creado por este lab (y solo eso).
+    """
+    def cancelled() -> bool:
+        return bool(cancel and cancel())
+
+    def say(msg: str) -> None:
+        if on_line:
+            on_line(msg)
+
+    tars: Sequence[Optional[Path]] = list(tar_paths) or [None] * len(plan.images)
+    for tar, image in zip(tars, plan.images):
+        if cancelled():
+            raise LabCancelled()
+        if not client.image_exists(image.repo_tag):
+            if tar is None:
+                raise LabError(f"La imagen {image.repo_tag} no está cargada y no hay .tar.")
+            if on_phase:
+                on_phase("loading")
+            say(f"docker load -i {Path(tar).name}")
+            client.load_image(Path(tar), on_line=on_line, cancel=cancel)
+
+    if on_phase:
+        on_phase("starting")
+    created_nets: List[str] = []
+    created_containers: List[str] = []
+    try:
+        for net in plan.networks:
+            if cancelled():
+                raise LabCancelled()
+            say(f"docker network create {net.name} ({net.subnet}, {net.driver}"
+                f"{', internal' if net.internal else ''})")
+            client.create_network(net)
+            created_nets.append(net.name)
+
+        for i, (image, name) in enumerate(zip(plan.images, plan.container_names)):
+            if cancelled():
+                raise LabCancelled()
+            if plan.networks:
+                say(f"docker run -d --network {plan.networks[i].name} --name {name} {image.repo_tag}")
+                client.run_container(image, plan.machine, plan.slug, name=name,
+                                     network=plan.networks[i].name)
+                created_containers.append(name)
+                if i + 1 < len(plan.networks):
+                    say(f"docker network connect {plan.networks[i + 1].name} {name}")
+                    client.connect_network(plan.networks[i + 1].name, name)
+            else:
+                ports = plan_port_mappings(image.exposed_ports) if plan.strategy == "bridge+ports" else []
+                say(f"docker run -d --name {name} {image.repo_tag}")
+                client.run_container(image, plan.machine, plan.slug, ports=ports,
+                                     network_mode="host" if plan.strategy == "host" else "bridge",
+                                     name=name)
+                created_containers.append(name)
+    except Exception:
+        # Deshacer SOLO lo nuestro (nunca `docker rm $(docker ps -aq)` como el script oficial).
+        for name in created_containers:
+            client.remove_container(name)
+        for net in created_nets:
+            client.remove_network(net)
+        raise
+
+    statuses = client.statuses_for(plan.container_names)
+    if len(statuses) != len(plan.container_names):
+        raise LabError("Algún contenedor se creó pero no se pudo inspeccionar.")
+    return statuses
+
+
+def describe_access_multi(statuses: Sequence[ContainerStatus], strategy: str) -> str:
+    """Texto de acceso para labs de pivoting: IPs por contenedor y red."""
+    if len(statuses) <= 1:
+        return describe_access(statuses[0], strategy) if statuses else ""
+    lines = []
+    for i, st in enumerate(statuses, 1):
+        ips = ", ".join(f"{ip} ({net.rsplit('_', 1)[-1]})"
+                        for net, ip in sorted(st.network_ips.items()) if ip)
+        lines.append(f"Máquina {i}: {ips or st.ip or '—'}")
+    lines.append("Entrada por pivoting1; el resto solo es alcanzable pivotando.")
+    return "\n".join(lines)
 
 
 def describe_access(status: ContainerStatus, strategy: str) -> str:
