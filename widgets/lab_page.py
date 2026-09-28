@@ -1,7 +1,7 @@
 """Página «Laboratorio»: estado de Docker y máquinas desplegadas."""
 from __future__ import annotations
 
-from typing import Dict, Optional
+from typing import Dict
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QGuiApplication
@@ -31,7 +31,6 @@ from theme import (
 )
 from widgets.icons import icon as svg_icon
 from widgets.pages import page_header
-
 
 _PHASE_TEXT = {
     "idle": "Inactivo",

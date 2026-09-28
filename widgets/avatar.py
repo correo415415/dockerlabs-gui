@@ -21,7 +21,7 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtWidgets import QLabel, QSizePolicy
 
-from theme import ACCENT, BG_LIGHT, BG_SIDEBAR, DANGER, FG_PRIMARY, FG_MUTED, SUCCESS
+from theme import ACCENT, BG_LIGHT, BG_SIDEBAR, DANGER, FG_MUTED, FG_PRIMARY, SUCCESS
 from widgets.icons import pixmap as svg_pixmap
 
 

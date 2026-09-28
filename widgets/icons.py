@@ -8,10 +8,9 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Dict
 
-from PyQt6.QtCore import QByteArray, QSize, Qt
+from PyQt6.QtCore import QByteArray, Qt
 from PyQt6.QtGui import QIcon, QPainter, QPixmap
 from PyQt6.QtSvg import QSvgRenderer
-
 
 # Cada icono es un SVG vectorial 24x24 con stroke en `currentColor`.
 # Al renderizarlos sustituimos `currentColor` por el color que queramos.

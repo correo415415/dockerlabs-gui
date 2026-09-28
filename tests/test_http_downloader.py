@@ -6,7 +6,6 @@ import io
 import threading
 import zipfile
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from pathlib import Path
 from threading import Event
 
 import pytest

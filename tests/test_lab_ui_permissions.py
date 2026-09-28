@@ -9,8 +9,8 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PyQt6")
 
-from PyQt6.QtWidgets import QApplication  # noqa: E402
 from PyQt6.QtCore import QEventLoop, QTimer  # noqa: E402
+from PyQt6.QtWidgets import QApplication  # noqa: E402
 
 import lab_controller  # noqa: E402
 from lab_manager import DockerInfo  # noqa: E402

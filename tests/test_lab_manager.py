@@ -10,10 +10,9 @@ from pathlib import Path
 import pytest
 
 from lab_manager import (
-    ContainerStatus,
     DockerClient,
+    DockerInfo,
     DockerNotInstalled,
-    DockerNotRunning,
     DockerPermissionDenied,
     InvalidLabArchive,
     PortMapping,
@@ -24,9 +23,7 @@ from lab_manager import (
     inspect_image_tar,
     plan_port_mappings,
     slug_from_name,
-    DockerInfo,
 )
-
 
 # ---------- fixtures: tar `docker save` sintético ----------
 

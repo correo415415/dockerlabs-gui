@@ -15,12 +15,11 @@ from PyQt6.QtCore import (
     QPoint,
     QPropertyAnimation,
     QRect,
-    QSize,
     Qt,
     QTimer,
     pyqtSignal,
 )
-from PyQt6.QtGui import QColor, QPainter, QPainterPath
+from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QFrame,
     QGraphicsDropShadowEffect,
@@ -33,8 +32,8 @@ from PyQt6.QtWidgets import (
 
 from theme import (
     ACCENT,
-    BG_MID,
     BG_LIGHT,
+    BG_MID,
     DANGER,
     FG_MUTED,
     FG_PRIMARY,
@@ -42,7 +41,6 @@ from theme import (
     WARNING,
 )
 from widgets.icons import pixmap as svg_pixmap
-
 
 _KIND_COLORS = {
     "info":    ACCENT,

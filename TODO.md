@@ -162,9 +162,9 @@ Implementado en `lab_manager.py` (núcleo sin Qt, testeable), `lab_controller.py
 - [ ] Tests `pytest` (sin GUI): parser de API, planificador de puertos, extractor de manifest,
       downloader con servidor HTTP local, normalización de nombres. Tests de UI con
       `QT_QPA_PLATFORM=offscreen`.
-- [ ] `pyproject.toml`: bump versión, dependencias, `ruff` config; `requirements.txt`.
+- [x] `pyproject.toml`: bump versión, dependencias, `ruff` config; `requirements.txt`.
 - [x] README actualizado (sin MEGA, con Docker, permisos Linux, requisitos por SO).
-- [ ] CI GitHub Actions: lint + tests en ubuntu/windows/macos.
+- [~] CI GitHub Actions: workflow listo en `ci/ci.yml` (moverlo a `.github/workflows/` — el token del asistente no tiene permiso `workflows`).
 
 ## 5. Ideas futuras (no bloqueantes)  `[ ]`
 

@@ -20,9 +20,10 @@ def _spin(ms):
 def test_mainwindow_boots(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     import importlib
+
     import main as m
     importlib.reload(m)
-    app = QApplication.instance() or QApplication(sys.argv)
+    _app = QApplication.instance() or QApplication(sys.argv)  # noqa: F841
     w = m.MainWindow()
     w.show()
     _spin(1500)

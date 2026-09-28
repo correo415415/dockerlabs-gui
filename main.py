@@ -9,7 +9,6 @@ Cambios v0.5:
 """
 from __future__ import annotations
 
-import json
 import logging
 import os
 import platform
@@ -18,7 +17,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from PyQt6.QtCore import QObject, QThread, Qt, QUrl, pyqtSignal
+from PyQt6.QtCore import QThread, QUrl, pyqtSignal
 from PyQt6.QtGui import QCloseEvent, QDesktopServices
 from PyQt6.QtWidgets import (
     QApplication,
@@ -29,6 +28,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from app_logging import install_excepthook, setup_logging
+from completed_store import CompletedStore
 from dockerlabs_api import (
     AuthResult,
     DockerLabsError,
@@ -37,13 +38,13 @@ from dockerlabs_api import (
     save_env,
 )
 from dockerlabs_api_ext import DockerLabsExtClient
-from completed_store import CompletedStore
 from download_manager import DownloadManager
 from lab_controller import LabController
 from notifier import notify_os, os_backend_available
 from settings_store import SettingsStore, UserSettings
 from theme import QSS
 from widgets.icons import icon as svg_icon
+from widgets.lab_page import LabPage
 from widgets.pages import (
     AboutPage,
     CompletedPage,
@@ -54,10 +55,8 @@ from widgets.pages import (
     SessionPage,
     SettingsPage,
 )
-from widgets.lab_page import LabPage
 from widgets.sidebar import Sidebar
 from widgets.toast import ToastManager
-from app_logging import install_excepthook, setup_logging
 
 logger = logging.getLogger(__name__)
 

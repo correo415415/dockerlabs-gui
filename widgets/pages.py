@@ -5,14 +5,12 @@ import csv
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from PyQt6.QtCore import QObject, QSize, Qt, QThread, QPoint, pyqtSignal
+from PyQt6.QtCore import QObject, QPoint, Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QAction, QColor, QFont, QPalette
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
     QComboBox,
-    QStyledItemDelegate,
-    QStyleOptionViewItem,
     QFileDialog,
     QFrame,
     QGridLayout,
@@ -27,12 +25,15 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QSpacerItem,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
+from download_manager import human_eta, human_size
 from theme import (
     ACCENT,
     BG_LIGHT,
@@ -45,10 +46,8 @@ from theme import (
     WARNING,
     difficulty_color,
 )
-from download_manager import human_eta, human_size
 from widgets.avatar import AvatarCircle
 from widgets.icons import icon as svg_icon
-
 
 # ============================================================
 # Workers compartidos
@@ -120,7 +119,8 @@ class _GhostComboBox(QComboBox):
     def paintEvent(self, event):  # type: ignore[override]
         # No llamamos al estilo nativo. Pintamos: fondo, texto y flecha.
         from PyQt6.QtGui import QPainter, QPen
-        from theme import BG_MID, BG_LIGHT, FG_PRIMARY, FG_MUTED, ACCENT
+
+        from theme import ACCENT, BG_LIGHT, BG_MID, FG_MUTED, FG_PRIMARY
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         rect = self.rect()
@@ -134,8 +134,8 @@ class _GhostComboBox(QComboBox):
         text_rect = rect.adjusted(14, 0, -32, 0)
         p.drawText(text_rect, int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft), self.currentText())
         # Flecha triángulo
-        from PyQt6.QtGui import QPolygon
         from PyQt6.QtCore import QPoint
+        from PyQt6.QtGui import QPolygon
         cx = rect.right() - 16
         cy = rect.center().y() + 1
         tri = QPolygon([QPoint(cx - 5, cy - 3), QPoint(cx + 5, cy - 3), QPoint(cx, cy + 3)])
@@ -389,7 +389,7 @@ class MachinesPage(QWidget):
 
     def _make_combo(self, prefix: str, options: list[str]) -> QComboBox:
         """ComboBox 'ghost' que muestra 'prefix: opcion' y se disimula con el tema."""
-        from theme import BG_MID, BG_LIGHT, BG_HOVER, FG_PRIMARY
+        from theme import BG_HOVER, BG_MID, FG_PRIMARY
         combo = _GhostComboBox()
         for opt in options:
             combo.addItem(f"{prefix}: {opt}", opt)
