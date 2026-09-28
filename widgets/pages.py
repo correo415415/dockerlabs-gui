@@ -539,7 +539,7 @@ class MachinesPage(QWidget):
 
     def _push_status_to_detail(self) -> None:
         m = self.detail.machine
-        if not m or not self.detail.isVisible():
+        if not m:
             return
         n = m.name
         self.detail.set_status(done=n in self._completed_names, downloading=n in self._downloading,

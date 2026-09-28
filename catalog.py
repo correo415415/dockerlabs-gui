@@ -165,10 +165,10 @@ def _abs_url(path: str) -> str:
 def parse_machine(raw: dict) -> Machine:
     author_raw = str(raw.get("autor", "") or "")
     diff_raw = str(raw.get("dificultad", "") or "")
-    image = raw.get("imagen_url") or raw.get("imagen") or ""
     mid = int(raw.get("id") or 0)
-    if not image and mid:
-        image = f"/img/maquina/{mid}"
+    # La API devuelve en `imagen` un logo genérico que suele dar 404; el endpoint
+    # /img/maquina/<id> (webp) es el que usa la propia web y es fiable.
+    image = f"/img/maquina/{mid}" if mid else (raw.get("imagen_url") or raw.get("imagen") or "")
     return Machine(
         id=mid,
         name=str(raw.get("nombre", "") or "").strip(),

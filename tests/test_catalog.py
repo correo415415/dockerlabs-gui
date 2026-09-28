@@ -37,7 +37,7 @@ def test_parse_catalog_normalizes():
     by = c.by_name()
     assert by["Psycho"].difficulty == "Fácil" and by["BreakMySSH"].difficulty == "Fácil"
     assert by["Hard"].difficulty == "Difícil" and by["Baby"].difficulty == "Muy Fácil"
-    assert by["Psycho"].image_url == "https://dockerlabs.es/dockerlabs/images/logos/logo.png"
+    assert by["Psycho"].image_url == "https://dockerlabs.es/img/maquina/1"   # se prefiere /img/maquina/<id>
     assert by["Hard"].image_url == "https://dockerlabs.es/img/maquina/3"
     assert by["BreakMySSH"].authors == ["A", "B"]
     assert by["BreakMySSH"].color == "#8bc34a"   # color por dificultad si falta
