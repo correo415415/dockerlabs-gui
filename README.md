@@ -16,7 +16,7 @@ Funciona en **Linux, Windows y macOS**.
 | Laboratorio | Máquinas desplegadas con Docker: IP, puertos, iniciar/detener/reiniciar/eliminar, abrir shell |
 | Completadas | Lista sincronizada con tu cuenta de dockerlabs.es |
 | Sesión | Login contra `/api/auth/login` (CSRF) con sesión persistente |
-| Ajustes | Carpeta de descargas, descargas simultáneas, notificaciones, red Docker |
+| Ajustes | Carpeta de descargas, descargas simultáneas, notificaciones, red Docker, tema oscuro/claro |
 
 ### Descargas
 Las máquinas se descargan directamente desde
@@ -32,6 +32,15 @@ La app reproduce ese script sin depender de bash:
 2. Lee `manifest.json` (tag) y `ExposedPorts` de la imagen.
 3. `docker load` (solo la primera vez) y `docker run -d --name dockerlabs_<máquina>`.
 4. Muestra la IP del contenedor y los puertos.
+
+**Labs de varias máquinas (pivoting)**: si el zip trae varios `.tar` (p. ej. *Grandma*),
+la app reproduce lo que hace el `auto_deploy.sh` oficial: crea las redes `pivotingN`
+(la primera `bridge`, el resto `macvlan --internal`), levanta cada contenedor en su red y
+lo conecta a la siguiente. A diferencia del script oficial (que al salir **borra todos los
+contenedores del sistema**), aquí redes y contenedores llevan el prefijo `dockerlabs_<máquina>`
+y *Eliminar* sólo toca los de ese lab.
+
+La extracción del zip ocurre únicamente al lanzar la máquina, nunca al descargar.
 
 Red según plataforma:
 - **Linux (Docker Engine)**: `bridge`, la IP del contenedor es accesible directamente
@@ -87,7 +96,7 @@ Todo vive en `~/.dockerlabs-gui/`:
 settings.json      ajustes
 .env               sesión persistente
 completed.json     completadas (caché local)
-csv/               catálogo cacheado (funciona sin conexión)
+catalog.json       catálogo cacheado (funciona sin conexión)
 downloads/         zips descargados
 labs/<máquina>/    imágenes extraídas
 logs/app.log       log rotativo (DOCKERLABS_DEBUG=1 para más detalle)
@@ -107,14 +116,19 @@ QT_QPA_PLATFORM=offscreen pytest tests -q   # en CI / sin pantalla
 Estructura:
 
 ```
-main.py               ventana principal y cableado
+main.py               ventana principal: sólo cableado de señales ↔ páginas
+session_controller.py login / sesión persistente / completadas / sync (sin UI)
+catalog_controller.py caché del catálogo + refresco en segundo plano (sin UI)
+catalog.py            modelo del catálogo (/api → Machine, Writeup, Catalog)
+workers.py            BaseWorker (QThread con errores uniformes) y WorkerPool
 http_downloader.py    descargador HTTP (sin Qt)
 download_manager.py   cola de descargas (Qt)
-lab_manager.py        zip → imagen → Docker CLI, red y permisos (sin Qt)
+lab_manager.py        zip → imagen(es) → Docker CLI, redes pivoting, permisos (sin Qt)
 lab_controller.py     workers Qt del laboratorio
-dockerlabs_api*.py    cliente de la API / web
+dockerlabs_api*.py    cliente de la API / web (parser html.parser de completadas)
+theme.py              paletas dark/light y QSS (`apply_theme`)
 app_logging.py        logging + excepthook
-widgets/              páginas, sidebar, iconos SVG, toasts
+widgets/              páginas, sidebar, iconos SVG, toasts, skeleton de carga
 tests/                pytest
 TODO.md               análisis y hoja de ruta
 ```
