@@ -1450,7 +1450,11 @@ class SettingsPage(QWidget):
         self.spin_concurrent.setMinimumHeight(32)
         self.spin_concurrent.setToolTip("Número máximo de máquinas descargándose a la vez; el resto espera en cola")
         self.spin_concurrent.valueChanged.connect(self.request_set_max_concurrent.emit)
-        hint_conc = QLabel("El servidor de DockerLabs a veces devuelve errores 500 bajo carga: 2 es un buen valor.")
+        hint_conc = QLabel(
+            "El servidor de DockerLabs limita cada conexión a ~0,5 MB/s y no admite descargas por "
+            "partes, así que una máquina no puede ir más rápido; sí puedes bajar varias a la vez. "
+            "Con muchas conexiones a veces devuelve errores 500 (se reintenta solo)."
+        )
         hint_conc.setStyleSheet(f"color: {FG_MUTED}; font-size: 11px;")
         hint_conc.setWordWrap(True)
         row_conc.addWidget(lbl_conc)

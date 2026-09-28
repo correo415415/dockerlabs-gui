@@ -33,6 +33,15 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_USER_AGENT = "dockerlabs-gui/1.0 (+https://github.com/correo415415/dockerlabs-gui)"
 CHUNK_BYTES = 1024 * 1024          # 1 MiB por iteración
+# Medido el 2026-09-28 contra gestion-maquinas.dockerlabs.es (nginx, HTTP/2):
+#   * ~540 KB/s por conexión, tanto con curl como con requests → el límite lo
+#     impone el servidor por conexión, no este código.
+#   * NO soporta `Range` (devuelve 200 + fichero completo) → imposible partir la
+#     descarga en trozos paralelos ni reanudar.
+#   * 3 conexiones simultáneas obtuvieron ~500 KB/s CADA UNA → el límite es por
+#     conexión, así que la única forma de ir más rápido es descargar VARIAS
+#     máquinas a la vez (ajuste «Descargas simultáneas»), no una más deprisa.
+SERVER_PER_CONNECTION_LIMIT_KBPS = 540
 CONNECT_TIMEOUT = 20
 READ_TIMEOUT = 120
 MAX_RETRIES = 5

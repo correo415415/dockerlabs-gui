@@ -52,6 +52,12 @@ si no existe, `sudo -A` con un askpass gráfico) y se ejecuta, como root:
 Si el servicio está parado se ofrece **«Iniciar servicio»**. Si prefieres hacerlo a mano:
 `sudo usermod -aG docker $USER` y vuelve a iniciar sesión.
 
+> **Velocidad de descarga.** El servidor oficial (`gestion-maquinas.dockerlabs.es`) limita
+> cada conexión a ~0,5 MB/s y no soporta `Range`, por lo que no es posible acelerar una
+> descarga partiéndola en trozos ni reanudarla. La app descarga en streaming sin
+> ningún límite propio; para aprovechar mejor el ancho de banda, sube el número de
+> «Descargas simultáneas» en Ajustes (cada conexión recibe su propio ~0,5 MB/s).
+
 ## Requisitos
 
 - Python **3.9+**
