@@ -6,12 +6,11 @@ import platform
 import shlex
 import shutil
 import subprocess
-import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
-from PyQt6.QtCore import QObject, QThread, pyqtSignal
+from PyQt6.QtCore import QObject, pyqtSignal
 
 from lab_manager import (
     CONTAINER_PREFIX,
@@ -35,6 +34,7 @@ from lab_manager import (
     slug_from_name,
     start_docker_service,
 )
+from workers import BaseWorker, WorkerPool
 
 logger = logging.getLogger(__name__)
 
@@ -81,22 +81,22 @@ class LabState:
 # Workers
 # =====================================================================
 
-class _DockerInfoWorker(QThread):
+class _DockerInfoWorker(BaseWorker):
     done = pyqtSignal(object)  # DockerInfo
 
     def __init__(self, client: DockerClient, parent=None) -> None:
         super().__init__(parent)
         self.client = client
+        self.failed.connect(self._on_failed)
 
-    def run(self) -> None:
-        try:
-            self.done.emit(self.client.info())
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("docker info")
-            self.done.emit(DockerInfo(available=False, running=False, error=str(exc)))
+    def work(self) -> None:
+        self.done.emit(self.client.info())
+
+    def _on_failed(self, err: str) -> None:
+        self.done.emit(DockerInfo(available=False, running=False, error=err))
 
 
-class _ElevateWorker(QThread):
+class _ElevateWorker(BaseWorker):
     """Pide privilegios (diálogo nativo) para conceder acceso o arrancar el servicio."""
     done = pyqtSignal(str, bool, str)   # action, ok, detail
 
@@ -104,38 +104,30 @@ class _ElevateWorker(QThread):
         super().__init__(parent)
         self.action = action
         self.socket_path = socket_path
+        self.failed.connect(lambda err: self.done.emit(self.action, False, err))
 
-    def run(self) -> None:
-        try:
-            if self.action == "grant":
-                ok, msg = grant_docker_access(sock=self.socket_path)
-            elif self.action == "start_service":
-                ok, msg = start_docker_service()
-            else:
-                ok, msg = False, f"Acción desconocida: {self.action}"
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("elevate %s", self.action)
-            ok, msg = False, str(exc)
+    def work(self) -> None:
+        if self.action == "grant":
+            ok, msg = grant_docker_access(sock=self.socket_path)
+        elif self.action == "start_service":
+            ok, msg = start_docker_service()
+        else:
+            ok, msg = False, f"Acción desconocida: {self.action}"
         self.done.emit(self.action, ok, msg)
 
 
-class _RefreshWorker(QThread):
+class _RefreshWorker(BaseWorker):
     done = pyqtSignal(list)   # list[ContainerStatus]
-    failed = pyqtSignal(str)
 
     def __init__(self, client: DockerClient, parent=None) -> None:
         super().__init__(parent)
         self.client = client
 
-    def run(self) -> None:
-        try:
-            self.done.emit(self.client.list_lab_containers())
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("refresh labs: %s", exc)
-            self.failed.emit(str(exc))
+    def work(self) -> None:
+        self.done.emit(self.client.list_lab_containers())
 
 
-class _LaunchWorker(QThread):
+class _LaunchWorker(BaseWorker):
     """extract → inspect → docker load (si hace falta) → docker run → inspect."""
     phase = pyqtSignal(str, str)                 # machine, phase
     progress = pyqtSignal(str, float)            # machine, percent
@@ -153,12 +145,11 @@ class _LaunchWorker(QThread):
         self.zip_path = zip_path
         self.labs_dir = labs_dir
         self.strategy = strategy
-        self._cancel = threading.Event()
 
-    def cancel(self) -> None:
-        self._cancel.set()
+    def on_error(self, exc: BaseException) -> None:
+        self.failed.emit(self.machine, f"Error inesperado: {exc}")
 
-    def run(self) -> None:
+    def work(self) -> None:
         m = self.machine
         try:
             self.phase.emit(m, "extracting")
@@ -186,12 +177,9 @@ class _LaunchWorker(QThread):
             self.failed.emit(m, "Cancelado por el usuario")
         except LabError as exc:
             self.failed.emit(m, str(exc))
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("launch %s", m)
-            self.failed.emit(m, f"Error inesperado: {exc}")
 
 
-class _ActionWorker(QThread):
+class _ActionWorker(BaseWorker):
     """stop / start / restart / remove sobre un contenedor existente."""
     done = pyqtSignal(str, str, object)   # machine, action, list[ContainerStatus]
     failed = pyqtSignal(str, str, str)    # machine, action, error
@@ -206,28 +194,25 @@ class _ActionWorker(QThread):
         self.image_tags = [t for t in image_tags if t]
         self.names = list(names)
 
-    def run(self) -> None:
+    def on_error(self, exc: BaseException) -> None:
+        self.failed.emit(self.machine, self.action, str(exc))
+
+    def work(self) -> None:
         names = self.names or self.client.container_names_for_slug(self.slug) or [container_name_for(self.slug)]
-        try:
-            if self.action == "stop":
-                for n in names:
-                    self.client.stop_container(n)
-            elif self.action == "start":
-                for n in names:
-                    self.client.start_container(n)
-            elif self.action == "restart":
-                for n in names:
-                    self.client.restart_container(n)
-            elif self.action == "remove":
-                # Solo lo de este lab: contenedores + redes pivoting + imágenes (nunca el resto del sistema)
-                self.client.teardown_lab(self.slug, image_tags=self.image_tags)
-            statuses = [] if self.action == "remove" else self.client.statuses_for(names)
-            self.done.emit(self.machine, self.action, statuses)
-        except LabError as exc:
-            self.failed.emit(self.machine, self.action, str(exc))
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("%s %s", self.action, self.machine)
-            self.failed.emit(self.machine, self.action, str(exc))
+        if self.action == "stop":
+            for n in names:
+                self.client.stop_container(n)
+        elif self.action == "start":
+            for n in names:
+                self.client.start_container(n)
+        elif self.action == "restart":
+            for n in names:
+                self.client.restart_container(n)
+        elif self.action == "remove":
+            # Solo lo de este lab: contenedores + redes pivoting + imágenes (nunca el resto del sistema)
+            self.client.teardown_lab(self.slug, image_tags=self.image_tags)
+        statuses = [] if self.action == "remove" else self.client.statuses_for(names)
+        self.done.emit(self.machine, self.action, statuses)
 
 
 # =====================================================================
@@ -253,7 +238,7 @@ class LabController(QObject):
         self.docker_info = DockerInfo(available=bool(self.client.binary), running=False)
         self.network_preference = network_preference
         self._labs: Dict[str, LabState] = {}
-        self._workers: List[QThread] = []
+        self._workers = WorkerPool()
 
     # ---------- consultas ----------
 
@@ -278,7 +263,7 @@ class LabController(QObject):
 
     @property
     def elevating(self) -> bool:
-        return any(isinstance(w, _ElevateWorker) and w.isRunning() for w in self._workers)
+        return self._workers.any_running(_ElevateWorker)
 
     # ---------- configuración ----------
 
@@ -391,26 +376,12 @@ class LabController(QObject):
         return open_in_terminal(self.client.exec_shell_command(name))
 
     def shutdown(self) -> None:
-        for w in list(self._workers):
-            try:
-                if isinstance(w, _LaunchWorker):
-                    w.cancel()
-                if w.isRunning():
-                    w.wait(3000)
-            except RuntimeError:
-                pass
+        self._workers.shutdown(3000)
 
     # ---------- slots ----------
 
-    def _track(self, w: QThread) -> None:
-        self._workers.append(w)
-        w.finished.connect(lambda: self._untrack(w))
-        w.start()
-
-    def _untrack(self, w: QThread) -> None:
-        if w in self._workers:
-            self._workers.remove(w)
-        w.deleteLater()
+    def _track(self, w: BaseWorker) -> None:
+        self._workers.track(w)
 
     def _on_docker_info(self, info: DockerInfo) -> None:
         self.docker_info = info

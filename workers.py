@@ -27,9 +27,10 @@ class BaseWorker(QThread):
             def work(self):
                 self.done.emit(self.client.fetch())
 
-    `format_error(exc)` permite personalizar el mensaje emitido.
-    `cancel()` pone un flag cooperativo que `work()` puede consultar vía
-    `is_cancelled`.
+    `format_error(exc)` permite personalizar el mensaje emitido y `on_error(exc)`
+    sustituir por completo la reacción (p. ej. si la subclase redefine `failed`
+    con otra firma). `cancel()` pone un flag cooperativo que `work()` puede
+    consultar vía `is_cancelled`.
     """
 
     failed = pyqtSignal(str)
@@ -48,6 +49,10 @@ class BaseWorker(QThread):
     def format_error(self, exc: BaseException) -> str:
         return str(exc) or exc.__class__.__name__
 
+    def on_error(self, exc: BaseException) -> None:
+        """Reacción por defecto ante una excepción en `work()`: emitir `failed`."""
+        self.failed.emit(self.format_error(exc))
+
     @property
     def is_cancelled(self) -> bool:
         return self._cancel.is_set()
@@ -63,7 +68,7 @@ class BaseWorker(QThread):
         except Exception as exc:  # noqa: BLE001
             logger.warning("%s falló: %s", self.__class__.__name__, exc, exc_info=True)
             try:
-                self.failed.emit(self.format_error(exc))
+                self.on_error(exc)
             except RuntimeError:
                 # El objeto Qt puede haber sido destruido durante el cierre.
                 pass

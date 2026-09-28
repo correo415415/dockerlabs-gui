@@ -132,12 +132,8 @@ class ToggleWorker(BaseWorker):
     def work(self) -> None:
         self.done.emit(self.name, self.client.toggle_completed(self.name))
 
-    def run(self) -> None:
-        try:
-            self.work()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("ToggleWorker(%s) falló: %s", self.name, exc)
-            self.failed.emit(self.name, str(exc))
+    def on_error(self, exc: BaseException) -> None:
+        self.failed.emit(self.name, self.format_error(exc))
 
 
 class SessionRestoreWorker(BaseWorker):
