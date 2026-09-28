@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from PyQt6.QtCore import QUrl, pyqtSignal
+from PyQt6.QtCore import QUrl
 from PyQt6.QtGui import QCloseEvent, QDesktopServices, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QApplication,
@@ -29,7 +29,7 @@ from PyQt6.QtWidgets import (
 )
 
 from app_logging import install_excepthook, setup_logging
-from catalog import CatalogStore
+from catalog_controller import CatalogController
 from download_manager import DownloadManager
 from lab_controller import LabController
 from notifier import notify_os, os_backend_available
@@ -49,22 +49,9 @@ from widgets.pages import (
 )
 from widgets.sidebar import Sidebar
 from widgets.toast import ToastManager
-from workers import BaseWorker, WorkerPool
+from workers import WorkerPool
 
 logger = logging.getLogger(__name__)
-
-
-class CatalogWorker(BaseWorker):
-    """Descarga /api en segundo plano y actualiza la caché JSON."""
-    done = pyqtSignal(object)   # Catalog
-
-    def __init__(self, store: CatalogStore, client, parent=None) -> None:
-        super().__init__(parent)
-        self.store = store
-        self.client = client
-
-    def work(self) -> None:
-        self.done.emit(self.store.refresh(self.client.fetch_api_data))
 
 
 APP_DIR = Path.home() / ".dockerlabs-gui"
@@ -149,9 +136,11 @@ class MainWindow(QMainWindow):
 
         # páginas
         self.page_dashboard = DashboardPage()
-        self.catalog_store = CatalogStore(CATALOG_FILE)
-        self.catalog = None
-        self._catalog_worker = None
+        self.catalogs = CatalogController(
+            CATALOG_FILE, lambda: self.session.client.fetch_api_data(), parent=self)
+        self.catalogs.catalog_changed.connect(self._apply_catalog)
+        self.catalogs.loading.connect(self._on_catalog_loading)
+        self.catalogs.refresh_failed.connect(self._on_catalog_refresh_failed)
         self.page_machines = MachinesPage(client=self.session.client)
         self.page_downloads = DownloadsPage()
         self.page_lab = LabPage()
@@ -183,7 +172,7 @@ class MainWindow(QMainWindow):
         self.page_downloads.request_open.connect(self._open_download_folder)
         self.page_downloads.request_clear_finished.connect(self.downloads.clear_finished)
         self.page_machines.request_launch.connect(self._launch_lab)
-        self.page_machines.request_refresh_catalog.connect(self._refresh_catalog)
+        self.page_machines.request_refresh_catalog.connect(self.catalogs.refresh)
         self.page_lab.request_action.connect(self._lab_action)
         self.page_lab.request_refresh.connect(self._refresh_docker)
         self.page_lab.request_go_machines.connect(lambda: self._go("machines"))
@@ -223,8 +212,8 @@ class MainWindow(QMainWindow):
         # estén visibles desde el principio.
         self._on_completed_changed(self.session.completed)
 
-        self._load_cached_catalog()
-        self._refresh_catalog()
+        self.catalogs.load_cached()
+        self.catalogs.refresh()
         self._install_shortcuts()
         self._refresh_downloaded_state()
         # Auto-login si hay sesión guardada
@@ -274,44 +263,23 @@ class MainWindow(QMainWindow):
             except Exception as exc:  # noqa: BLE001
                 logger.warning("notificación del SO: %s", exc)
 
-    # ---- Catálogo ----
+    # ---- Catálogo (la lógica vive en CatalogController) ----
 
-    def _load_cached_catalog(self) -> None:
-        cat = self.catalog_store.load_cached()
-        if cat is not None:
-            self._apply_catalog(cat)
-        else:
-            self.page_machines.set_loading(True, "Descargando catálogo…")
+    @property
+    def catalog(self):
+        return self.catalogs.catalog
 
-    def _refresh_catalog(self) -> None:
-        if self._catalog_worker is not None:
-            return
-        self.page_machines.set_loading(True)
-        worker = CatalogWorker(self.catalog_store, self.session.client, parent=self)
-        worker.done.connect(self._on_catalog_refreshed)
-        worker.failed.connect(self._on_catalog_refresh_failed)
-        worker.finished.connect(self._on_catalog_worker_finished)
-        self._catalog_worker = worker
-        self._workers.track(worker)
-
-    def _on_catalog_worker_finished(self) -> None:
-        self._catalog_worker = None
-        self.page_machines.set_loading(False)
+    def _on_catalog_loading(self, active: bool, msg: str) -> None:
+        self.page_machines.set_loading(active, msg)
 
     def _apply_catalog(self, cat) -> None:
-        self.catalog = cat
         self.page_machines.set_catalog(cat)
         self.page_dashboard.set_catalog(cat, self.session.completed)
         self.page_completed.set_catalog(cat)
         self._reconcile_downloads_with_catalog()
 
-    def _on_catalog_refreshed(self, cat) -> None:
-        self._apply_catalog(cat)
-        logger.info("catálogo actualizado: %d máquinas", len(cat.machines))
-
-    def _on_catalog_refresh_failed(self, err: str) -> None:
-        logger.warning("catálogo: %s", err)
-        if self.catalog is None:
+    def _on_catalog_refresh_failed(self, err: str, has_cache: bool) -> None:
+        if not has_cache:
             self.page_machines.set_catalog(None)
             self.notify("Sin catálogo", f"Sin internet y sin caché: {err}", kind="warning")
         else:
@@ -596,7 +564,7 @@ class MainWindow(QMainWindow):
         for i, key in enumerate(keys, start=1):
             QShortcut(QKeySequence(f"Ctrl+{i}"), self, activated=lambda k=key: self._go(k))
         QShortcut(QKeySequence.StandardKey.Find, self, activated=self._focus_search)
-        QShortcut(QKeySequence("F5"), self, activated=self._refresh_catalog)
+        QShortcut(QKeySequence("F5"), self, activated=self.catalogs.refresh)
         QShortcut(QKeySequence("Escape"), self, activated=self.page_machines.close_detail)
 
     def _focus_search(self) -> None:
@@ -817,6 +785,7 @@ class MainWindow(QMainWindow):
         except Exception as exc:  # noqa: BLE001
             logger.warning("downloads.shutdown: %s", exc)
         self.session.shutdown()
+        self.catalogs.shutdown()
         self._workers.shutdown(1500)
         super().closeEvent(event)
 
