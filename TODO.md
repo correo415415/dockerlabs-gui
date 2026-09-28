@@ -150,13 +150,13 @@ Implementado en `lab_manager.py` (núcleo sin Qt, testeable), `lab_controller.py
 
 ## 4. Estabilidad / calidad  `[ ]`
 
-- [ ] `logging` a fichero rotativo `~/.dockerlabs-gui/logs/app.log` + `sys.excepthook` que
+- [x] `logging` a fichero rotativo `~/.dockerlabs-gui/logs/app.log` + `sys.excepthook` que
       muestra un diálogo en lugar de morir en silencio.
-- [ ] Sustituir todos los `except Exception: pass` por logging con contexto.
+- [x] Sustituir todos los `except Exception: pass` por logging con contexto (main.py).
 - [ ] Refactor `MainWindow`: extraer `SessionController`, `CatalogController`.
 - [ ] Catálogo directamente desde JSON cacheado (`catalog.json`) — el CSV pasa a ser export opcional.
 - [ ] `completed_machines_from_home()` parseo robusto con `html.parser` (no regex).
-- [ ] Eliminar monkey-patch de `mouseReleaseEvent` (usar `clicked`/`eventFilter`).
+- [x] Eliminar monkey-patch de `mouseReleaseEvent` (señal `Sidebar.profile_clicked` vía `eventFilter`).
 - [ ] Workers: clase base `BaseWorker(QThread)` con `finished` → auto-limpieza sin lambdas.
 - [ ] Reintentos en catálogo (`/api`) con timeout corto y fallback a caché.
 - [ ] Tests `pytest` (sin GUI): parser de API, planificador de puertos, extractor de manifest,

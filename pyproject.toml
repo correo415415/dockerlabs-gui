@@ -35,5 +35,6 @@ py-modules = [
     "download_manager",
     "lab_manager",
     "lab_controller",
+    "app_logging",
 ]
 packages = ["widgets"]

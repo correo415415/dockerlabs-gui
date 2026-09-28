@@ -57,6 +57,9 @@ from widgets.pages import (
 from widgets.lab_page import LabPage
 from widgets.sidebar import Sidebar
 from widgets.toast import ToastManager
+from app_logging import install_excepthook, setup_logging
+
+logger = logging.getLogger(__name__)
 
 
 APP_DIR = Path.home() / ".dockerlabs-gui"
@@ -160,14 +163,14 @@ class SessionRestoreWorker(QThread):
             # las acciones de toggle funcionen.
             try:
                 self.client.fetch_root_csrf()
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("fetch_root_csrf: %s", exc)
             profile_url = ""
             try:
                 profile = self.client.author_profile(user)
                 profile_url = profile.get("profile_image_url", "") or ""
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("author_profile(%s): %s", user, exc)
             self.success.emit(user, profile_url)
         except Exception as exc:  # noqa: BLE001
             self.failed.emit(str(exc))
@@ -243,11 +246,7 @@ class MainWindow(QMainWindow):
         self.sidebar.login_clicked.connect(self._open_session_page)
         self.sidebar.logout_clicked.connect(self._do_logout)
         # Tambien al hacer click en el avatar/pill
-        try:
-            self.sidebar.user_pill.mouseReleaseEvent = lambda _e: self._open_session_page()
-            self.sidebar.avatar.mouseReleaseEvent = lambda _e: self._open_session_page()
-        except Exception:  # noqa: BLE001
-            pass
+        self.sidebar.profile_clicked.connect(self._open_session_page)
         h.addWidget(self.sidebar)
 
         self.stack = QStackedWidget()
@@ -370,8 +369,8 @@ class MainWindow(QMainWindow):
         super().resizeEvent(event)
         try:
             self.toasts.reposition()
-        except Exception:
-            pass
+        except RuntimeError as exc:  # widget ya destruido durante el cierre
+            logger.debug("toasts.reposition: %s", exc)
 
     def statusBar(self):  # type: ignore[override]
         """Devolvemos un stub silencioso en lugar de la QStatusBar nativa."""
@@ -386,13 +385,13 @@ class MainWindow(QMainWindow):
             try:
                 self.toasts.show(title, body, kind=kind,
                                  on_click=on_click, payload=payload)
-            except Exception:
-                pass
+            except Exception:  # noqa: BLE001
+                logger.exception("toast in-app")
         if self.settings.os_notifications and self._os_backend:
             try:
                 notify_os(title, body, app_id="DockerLabs GUI")
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("notificación del SO: %s", exc)
 
     # ---- CSV ----
 
@@ -472,7 +471,7 @@ class MainWindow(QMainWindow):
             self.toasts.show("Autenticando…",
                              f"Conectando como {user}", kind="info")
         except Exception:  # noqa: BLE001
-            pass
+            logger.exception("toast autenticando")
         # Nuevo cliente para evitar arrastrar cookies viejas
         self.client = DockerLabsExtClient()
         worker = LoginWorker(self.client, user, pwd, parent=self)
@@ -496,7 +495,7 @@ class MainWindow(QMainWindow):
             )
             save_env(ENV_FILE, build_session_payload(res, self.client.base_url))
         except Exception:  # noqa: BLE001
-            pass
+            logger.exception("no se pudo guardar la sesión en %s", ENV_FILE)
         self._apply_login(username, profile_url, sync_anonymous=True)
 
     def _on_login_fail(self, msg: str) -> None:
@@ -544,7 +543,7 @@ class MainWindow(QMainWindow):
             self._workers.append(fetcher)
             fetcher.start()
         except Exception:  # noqa: BLE001
-            pass
+            logger.exception("no se pudo lanzar la sincronización de completadas")
 
     def _do_logout(self) -> None:
         # Borrar la sesión persistente para que al reiniciar NO se auto-loguee
@@ -558,7 +557,7 @@ class MainWindow(QMainWindow):
                     "DOCKERLABS_BASE_URL": self.client.base_url,
                 })
         except Exception:  # noqa: BLE001
-            pass
+            logger.exception("no se pudo limpiar la sesión persistente")
         self.client = DockerLabsExtClient()
         self._username = None
         # No vaciamos el set local; el usuario sigue viendo lo que tenía
@@ -829,8 +828,8 @@ class MainWindow(QMainWindow):
                         return True
                     if _has("dolphin") and _try(["dolphin", str(folder)]):
                         return True
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("abrir explorador nativo: %s", exc)
 
         # Red de seguridad: QDesktopServices con file:// URI
         try:
@@ -878,7 +877,7 @@ class MainWindow(QMainWindow):
         try:
             self._open_in_explorer(Path(path))
         except Exception:  # noqa: BLE001
-            pass
+            logger.exception("abrir ruta %s", path)
 
     def _refresh_downloaded_state(self) -> None:
         states = self.downloads.all_states()
@@ -903,7 +902,7 @@ class MainWindow(QMainWindow):
             if names:
                 self.downloads.reconcile_with_catalog(names)
         except Exception:  # noqa: BLE001
-            pass
+            logger.exception("reconcile_with_catalog")
         self._refresh_downloaded_state()
 
     # ---- Laboratorio (Docker) ----
@@ -1083,8 +1082,8 @@ class MainWindow(QMainWindow):
         try:
             n = len(self.page_machines._all_rows)  # noqa: SLF001
             self.page_dashboard.set_total(n)
-        except Exception:
-            pass
+        except (AttributeError, TypeError) as exc:
+            logger.debug("update_totals: %s", exc)
 
     # ---- Cierre ----
 
@@ -1107,11 +1106,11 @@ class MainWindow(QMainWindow):
         try:
             self.labs.shutdown()
         except Exception as exc:  # noqa: BLE001
-            logging.getLogger(__name__).warning("labs.shutdown: %s", exc)
+            logger.warning("labs.shutdown: %s", exc)
         try:
             self.downloads.shutdown()
         except Exception as exc:  # noqa: BLE001
-            logging.getLogger(__name__).warning("downloads.shutdown: %s", exc)
+            logger.warning("downloads.shutdown: %s", exc)
         for worker in list(self._workers):
             try:
                 if worker.isRunning():
@@ -1122,11 +1121,16 @@ class MainWindow(QMainWindow):
 
 
 def main() -> int:
+    log_file = setup_logging(APP_DIR)
+    logger.info("DockerLabs GUI arrancando · %s %s · Python %s",
+                platform.system(), platform.release(), platform.python_version())
     app = QApplication(sys.argv)
     app.setApplicationName("DockerLabs GUI")
     app.setStyleSheet(QSS)
     win = MainWindow()
+    install_excepthook(lambda: win)
     win.show()
+    logger.debug("log en %s", log_file)
     return app.exec()
 
 

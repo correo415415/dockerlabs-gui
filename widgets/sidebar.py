@@ -13,6 +13,7 @@ from typing import Dict, List, Optional
 
 from PyQt6.QtCore import (
     QEasingCurve,
+    QEvent,
     QParallelAnimationGroup,
     QPropertyAnimation,
     QSize,
@@ -94,6 +95,7 @@ class Sidebar(QFrame):
     nav_changed = pyqtSignal(str)
     login_clicked = pyqtSignal()
     logout_clicked = pyqtSignal()
+    profile_clicked = pyqtSignal()   # clic en el avatar / pill de usuario
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -192,6 +194,9 @@ class Sidebar(QFrame):
         self.avatar = AvatarCircle()
         self.avatar.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         pill_layout.addWidget(self.avatar, 0, Qt.AlignmentFlag.AlignVCenter)
+        # Clic en el pill o en el avatar → profile_clicked (sin monkey-patching)
+        self.user_pill.installEventFilter(self)
+        self.avatar.installEventFilter(self)
 
         # Texto (nombre + estado)
         self.user_text_wrap = QFrame()
@@ -279,6 +284,13 @@ class Sidebar(QFrame):
             self._group_anim.addAnimation(a)
 
     # ---------- API ----------
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802
+        if obj in (self.user_pill, self.avatar) and event.type() == QEvent.Type.MouseButtonRelease:
+            if event.button() == Qt.MouseButton.LeftButton:
+                self.profile_clicked.emit()
+                return True
+        return super().eventFilter(obj, event)
 
     def set_current(self, key: str) -> None:
         btn = self._buttons.get(key)
