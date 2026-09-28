@@ -7,10 +7,11 @@ import time
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt6.QtCore import QCoreApplication  # noqa: E402
+from PyQt6.QtWidgets import QApplication  # noqa: E402
 
 from catalog_controller import CatalogController  # noqa: E402
 
-_app = QCoreApplication.instance() or QCoreApplication([])  # noqa: F841
+_app = QApplication.instance() or QApplication([])  # noqa: F841
 
 API = {"info_maquinas": [
     {"id": 1, "nombre": "Trust", "dificultad": "Muy Fácil", "autor": "a", "fecha": "01/01/2024"},

@@ -6,11 +6,12 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt6.QtCore import QCoreApplication  # noqa: E402
+from PyQt6.QtWidgets import QApplication  # noqa: E402
 
 from dockerlabs_api import AuthResult, load_env  # noqa: E402
 from session_controller import SessionController  # noqa: E402
 
-_app = QCoreApplication.instance() or QCoreApplication([])  # noqa: F841
+_app = QApplication.instance() or QApplication([])  # noqa: F841
 
 
 class FakeClient:

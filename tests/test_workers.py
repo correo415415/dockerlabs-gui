@@ -7,10 +7,11 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt6.QtCore import QCoreApplication, pyqtSignal  # noqa: E402
 from PyQt6.QtTest import QSignalSpy  # noqa: E402
+from PyQt6.QtWidgets import QApplication  # noqa: E402
 
 from workers import BaseWorker, WorkerPool, connect_all  # noqa: E402
 
-_app = QCoreApplication.instance() or QCoreApplication([])  # noqa: F841
+_app = QApplication.instance() or QApplication([])  # noqa: F841
 
 
 class _OkWorker(BaseWorker):
