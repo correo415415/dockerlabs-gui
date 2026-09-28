@@ -37,6 +37,8 @@ py-modules = [
     "lab_controller",
     "app_logging",
     "catalog",
+    "completed_store",
+    "workers",
 ]
 packages = ["widgets"]
 

@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from PyQt6.QtCore import QThread, QUrl, pyqtSignal
+from PyQt6.QtCore import QUrl, pyqtSignal
 from PyQt6.QtGui import QCloseEvent, QDesktopServices, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QApplication,
@@ -57,25 +57,22 @@ from widgets.pages import (
 )
 from widgets.sidebar import Sidebar
 from widgets.toast import ToastManager
+from workers import BaseWorker, WorkerPool
 
 logger = logging.getLogger(__name__)
 
 
-class CatalogWorker(QThread):
+class CatalogWorker(BaseWorker):
     """Descarga /api en segundo plano y actualiza la caché JSON."""
     done = pyqtSignal(object)   # Catalog
-    failed = pyqtSignal(str)
 
     def __init__(self, store: CatalogStore, client, parent=None) -> None:
         super().__init__(parent)
         self.store = store
         self.client = client
 
-    def run(self) -> None:
-        try:
-            self.done.emit(self.store.refresh(self.client.fetch_api_data))
-        except Exception as exc:  # noqa: BLE001
-            self.failed.emit(str(exc))
+    def work(self) -> None:
+        self.done.emit(self.store.refresh(self.client.fetch_api_data))
 
 
 APP_DIR = Path.home() / ".dockerlabs-gui"
@@ -93,101 +90,96 @@ COMPLETED_FILE = APP_DIR / "completed.json"
 # Workers
 # -----------------------------------------------------------------------------
 
-class LoginWorker(QThread):
+class LoginWorker(BaseWorker):
     success = pyqtSignal(str, str)
-    failed = pyqtSignal(str)
 
     def __init__(self, client: DockerLabsExtClient, user: str, pwd: str, parent=None) -> None:
         super().__init__(parent)
         self.client = client; self.user = user; self.pwd = pwd
 
-    def run(self) -> None:
-        try:
-            res = self.client.login(self.user, self.pwd)
-            if not res.success:
-                self.failed.emit(res.message or "Login rechazado"); return
-            profile = self.client.author_profile(self.user)
-            self.success.emit(self.user, profile.get("profile_image_url", "") or "")
-        except DockerLabsError as exc:
-            self.failed.emit(str(exc))
-        except Exception as exc:  # noqa: BLE001
-            self.failed.emit(f"Error: {exc}")
+    def work(self) -> None:
+        res = self.client.login(self.user, self.pwd)
+        if not res.success:
+            self.failed.emit(res.message or "Login rechazado"); return
+        profile = self.client.author_profile(self.user)
+        self.success.emit(self.user, profile.get("profile_image_url", "") or "")
+
+    def format_error(self, exc: BaseException) -> str:
+        if isinstance(exc, DockerLabsError):
+            return str(exc)
+        return f"Error: {exc}"
 
 
-class CompletedWorker(QThread):
+class CompletedWorker(BaseWorker):
     done = pyqtSignal(list)
-    failed = pyqtSignal(str)
 
     def __init__(self, client: DockerLabsExtClient, parent=None) -> None:
         super().__init__(parent)
         self.client = client
 
-    def run(self) -> None:
-        try:
-            self.done.emit(self.client.completed_machines_from_home())
-        except Exception as exc:  # noqa: BLE001
-            self.failed.emit(str(exc))
+    def work(self) -> None:
+        self.done.emit(self.client.completed_machines_from_home())
 
 
-class ToggleWorker(QThread):
+class ToggleWorker(BaseWorker):
     done = pyqtSignal(str, bool)
-    failed = pyqtSignal(str, str)
+    failed = pyqtSignal(str, str)   # (nombre, error)
 
     def __init__(self, client: DockerLabsExtClient, name: str, parent=None) -> None:
         super().__init__(parent)
         self.client = client; self.name = name
 
+    def work(self) -> None:
+        self.done.emit(self.name, self.client.toggle_completed(self.name))
+
     def run(self) -> None:
         try:
-            self.done.emit(self.name, self.client.toggle_completed(self.name))
+            self.work()
         except Exception as exc:  # noqa: BLE001
+            logger.warning("ToggleWorker(%s) falló: %s", self.name, exc)
             self.failed.emit(self.name, str(exc))
 
 
-class SessionRestoreWorker(QThread):
+class SessionRestoreWorker(BaseWorker):
     """Intenta reutilizar la cookie guardada en .env para auto-loguear."""
     success = pyqtSignal(str, str)       # username, profile_image_url
-    failed = pyqtSignal(str)
 
     def __init__(self, client: DockerLabsExtClient, env_path: Path, parent=None) -> None:
         super().__init__(parent)
         self.client = client
         self.env_path = env_path
 
-    def run(self) -> None:
+    def work(self) -> None:
+        env = load_env(self.env_path)
+        cookie = env.get("DOCKERLABS_SESSION") or ""
+        csrf = env.get("DOCKERLABS_CSRF") or ""
+        user_hint = env.get("DOCKERLABS_USERNAME") or ""
+        if not cookie:
+            self.failed.emit("no-cookie"); return
+        self.client.inject_session_cookie(cookie)
+        if csrf:
+            self.client._csrf_token = csrf  # noqa: SLF001
+        if not self.client.is_session_valid():
+            self.failed.emit("expired"); return
+        user = self.client.current_user_from_home() or user_hint
+        if not user:
+            self.failed.emit("no-user"); return
+        # Refrescamos el CSRF actual desde la home autenticada para que
+        # las acciones de toggle funcionen.
         try:
-            env = load_env(self.env_path)
-            cookie = env.get("DOCKERLABS_SESSION") or ""
-            csrf = env.get("DOCKERLABS_CSRF") or ""
-            user_hint = env.get("DOCKERLABS_USERNAME") or ""
-            if not cookie:
-                self.failed.emit("no-cookie"); return
-            self.client.inject_session_cookie(cookie)
-            if csrf:
-                self.client._csrf_token = csrf  # noqa: SLF001
-            if not self.client.is_session_valid():
-                self.failed.emit("expired"); return
-            user = self.client.current_user_from_home() or user_hint
-            if not user:
-                self.failed.emit("no-user"); return
-            # Refrescamos el CSRF actual desde la home autenticada para que
-            # las acciones de toggle funcionen.
-            try:
-                self.client.fetch_root_csrf()
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("fetch_root_csrf: %s", exc)
-            profile_url = ""
-            try:
-                profile = self.client.author_profile(user)
-                profile_url = profile.get("profile_image_url", "") or ""
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("author_profile(%s): %s", user, exc)
-            self.success.emit(user, profile_url)
+            self.client.fetch_root_csrf()
         except Exception as exc:  # noqa: BLE001
-            self.failed.emit(str(exc))
+            logger.debug("fetch_root_csrf: %s", exc)
+        profile_url = ""
+        try:
+            profile = self.client.author_profile(user)
+            profile_url = profile.get("profile_image_url", "") or ""
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("author_profile(%s): %s", user, exc)
+        self.success.emit(user, profile_url)
 
 
-class SyncCompletedWorker(QThread):
+class SyncCompletedWorker(BaseWorker):
     """Combina las completadas locales con las del servidor.
 
     1. Lee las completadas del servidor.
@@ -195,30 +187,26 @@ class SyncCompletedWorker(QThread):
     3. Emite el set final unificado.
     """
     done = pyqtSignal(list, list)   # final_list, newly_pushed
-    failed = pyqtSignal(str)
 
     def __init__(self, client: DockerLabsExtClient, local: set[str], parent=None) -> None:
         super().__init__(parent)
         self.client = client
         self.local = set(local)
 
-    def run(self) -> None:
-        try:
-            server = set(self.client.completed_machines_from_home())
-            to_push = sorted(self.local - server)
-            pushed: list[str] = []
-            for name in to_push:
-                try:
-                    new_state = self.client.toggle_completed(name)
-                    if new_state:
-                        pushed.append(name)
-                except Exception:  # noqa: BLE001
-                    # Si una falla, seguimos con las demás
-                    continue
-            final = sorted(server | set(pushed))
-            self.done.emit(final, pushed)
-        except Exception as exc:  # noqa: BLE001
-            self.failed.emit(str(exc))
+    def work(self) -> None:
+        server = set(self.client.completed_machines_from_home())
+        to_push = sorted(self.local - server)
+        pushed: list[str] = []
+        for name in to_push:
+            try:
+                new_state = self.client.toggle_completed(name)
+                if new_state:
+                    pushed.append(name)
+            except Exception:  # noqa: BLE001
+                # Si una falla, seguimos con las demás
+                continue
+        final = sorted(server | set(pushed))
+        self.done.emit(final, pushed)
 
 
 # -----------------------------------------------------------------------------
@@ -242,7 +230,7 @@ class MainWindow(QMainWindow):
         self.client = DockerLabsExtClient()
         self._username: Optional[str] = None
         self._completed: set[str] = set()
-        self._workers: list[QThread] = []
+        self._workers = WorkerPool()
         self._completed_store = CompletedStore(COMPLETED_FILE)
         # Cargamos las completadas anónimas como base inicial (se mostrarán
         # incluso sin sesión y se fusionarán con las del servidor al loguear).
@@ -431,12 +419,9 @@ class MainWindow(QMainWindow):
         worker.failed.connect(self._on_catalog_refresh_failed)
         worker.finished.connect(self._on_catalog_worker_finished)
         self._catalog_worker = worker
-        self._workers.append(worker); worker.start()
+        self._workers.track(worker)
 
     def _on_catalog_worker_finished(self) -> None:
-        w = self._catalog_worker
-        if w in self._workers:
-            self._workers.remove(w)
         self._catalog_worker = None
         self.page_machines.set_loading(False)
 
@@ -467,9 +452,7 @@ class MainWindow(QMainWindow):
         worker = SessionRestoreWorker(self.client, ENV_FILE, parent=self)
         worker.success.connect(self._on_restore_ok)
         worker.failed.connect(self._on_restore_fail)
-        worker.finished.connect(lambda: self._workers.remove(worker)
-                                if worker in self._workers else None)
-        self._workers.append(worker); worker.start()
+        self._workers.track(worker)
 
     def _on_restore_ok(self, username: str, profile_url: str) -> None:
         self.notify("Sesión restaurada", f"Bienvenido de nuevo, {username}", kind="info")
@@ -498,9 +481,7 @@ class MainWindow(QMainWindow):
         worker = LoginWorker(self.client, user, pwd, parent=self)
         worker.success.connect(self._on_login_ok)
         worker.failed.connect(self._on_login_fail)
-        worker.finished.connect(lambda: self._workers.remove(worker)
-                                if worker in self._workers else None)
-        self._workers.append(worker); worker.start()
+        self._workers.track(worker)
 
     def _on_login_ok(self, username: str, profile_url: str) -> None:
         self.statusBar().showMessage(f"Sesión iniciada como {username}")
@@ -558,11 +539,7 @@ class MainWindow(QMainWindow):
             fetcher.finished_data.connect(
                 lambda data, _u: self.page_session.set_avatar_pixmap(bytes(data))
             )
-            fetcher.finished.connect(
-                lambda: self._workers.remove(fetcher) if fetcher in self._workers else None
-            )
-            self._workers.append(fetcher)
-            fetcher.start()
+            self._workers.track(fetcher)
         except Exception:  # noqa: BLE001
             logger.exception("no se pudo lanzar la sincronización de completadas")
 
@@ -617,9 +594,7 @@ class MainWindow(QMainWindow):
         worker = SyncCompletedWorker(self.client, self._completed, parent=self)
         worker.done.connect(self._on_sync_done)
         worker.failed.connect(self._on_sync_fail)
-        worker.finished.connect(lambda: self._workers.remove(worker)
-                                if worker in self._workers else None)
-        self._workers.append(worker); worker.start()
+        self._workers.track(worker)
 
     def _on_sync_done(self, final: list, pushed: list) -> None:
         self._completed = set(final)
@@ -674,9 +649,7 @@ class MainWindow(QMainWindow):
         worker = ToggleWorker(self.client, name, parent=self)
         worker.done.connect(self._on_toggle_ok)
         worker.failed.connect(self._on_toggle_fail)
-        worker.finished.connect(lambda: self._workers.remove(worker)
-                                if worker in self._workers else None)
-        self._workers.append(worker); worker.start()
+        self._workers.track(worker)
 
     def _on_toggle_ok(self, name: str, new_state: bool) -> None:
         if new_state:
@@ -1150,12 +1123,7 @@ class MainWindow(QMainWindow):
             self.downloads.shutdown()
         except Exception as exc:  # noqa: BLE001
             logger.warning("downloads.shutdown: %s", exc)
-        for worker in list(self._workers):
-            try:
-                if worker.isRunning():
-                    worker.quit(); worker.wait(1500)
-            except RuntimeError:
-                pass
+        self._workers.shutdown(1500)
         super().closeEvent(event)
 
 
