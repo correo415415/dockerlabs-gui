@@ -1,10 +1,21 @@
 """Lanzador de laboratorios (CTF) de DockerLabs sobre Docker — multiplataforma.
 
-Formato de una máquina (analizado a partir de los zips oficiales):
+Formato de una máquina (analizado a partir de los zips oficiales: Trust,
+Pinguinazo, BreakMySSH, Grandma…):
 
     <slug>.zip
     ├── <slug>.tar        ← imagen Docker exportada con `docker save`
+    │   (labs de pivoting: varios tars, p.ej. grandma1.tar, grandma2.tar…)
     └── auto_deploy.sh    ← script bash oficial (docker load + run + inspect IP)
+
+Los `auto_deploy.sh` revisados **no arrancan servicios**: los servicios van en el
+`CMD`/`ENTRYPOINT` de la imagen; el script solo hace `docker load` + `docker run`
+(en hosts ARM añade `--platform linux/amd64`). En los labs de pivoting (Grandma)
+además crea redes ``pivoting1..N`` (``10.10.10.0/24``, ``20.20.20.0/24``…; la
+primera bridge y el resto macvlan `--internal`), conecta cada contenedor a su red
+y a la siguiente, y al salir **para y borra TODOS los contenedores del sistema**
+(y opcionalmente todas las imágenes). Este módulo reproduce el despliegue pero la
+limpieza solo toca los contenedores/redes creados por la app (etiquetados).
 
 Este módulo reproduce lo que hace `auto_deploy.sh` pero:
 
@@ -42,6 +53,7 @@ logger = logging.getLogger(__name__)
 CONTAINER_PREFIX = "dockerlabs_"
 LABEL_KEY = "es.dockerlabs.gui"
 LABEL_MACHINE = "es.dockerlabs.machine"
+LABEL_SLUG = "es.dockerlabs.slug"
 DOCKER_TIMEOUT = 30
 
 # En Windows, ocultar la ventana de consola que aparece al lanzar subprocesos
@@ -124,8 +136,57 @@ class ImageInfo:
 class LabFiles:
     slug: str
     root: Path
-    tar_path: Path
+    tar_path: Path                       # tar principal (compat; = tar_paths[0])
     deploy_script: Optional[Path]
+    tar_paths: List[Path] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if not self.tar_paths:
+            self.tar_paths = [self.tar_path]
+
+    @property
+    def is_multi(self) -> bool:
+        return len(self.tar_paths) > 1
+
+
+@dataclass
+class NetworkSpec:
+    name: str
+    subnet: str
+    gateway: str
+    driver: str = "bridge"     # bridge | macvlan
+    internal: bool = False
+
+    def create_args(self) -> List[str]:
+        args = ["network", "create", "--subnet", self.subnet, "--gateway", self.gateway,
+                "--label", f"{LABEL_KEY}=1"]
+        if self.driver == "macvlan":
+            args += ["-d", "macvlan", "--opt", "macvlan_mode=bridge"]
+        if self.internal:
+            args.append("--internal")
+        else:
+            args.append("--attachable")
+        args.append(self.name)
+        return args
+
+
+@dataclass
+class DeployPlan:
+    """Qué imágenes, con qué nombres y en qué redes se despliega un lab.
+
+    Reproduce el `auto_deploy.sh` oficial: un tar → un contenedor; N tars →
+    redes ``<prefijo>pivotingN`` en cadena (c0∈{n1,n2}, c1∈{n2,n3}, …).
+    """
+    slug: str
+    machine: str
+    images: List["ImageInfo"]
+    container_names: List[str]
+    networks: List[NetworkSpec] = field(default_factory=list)
+    strategy: str = "bridge"
+
+    @property
+    def is_multi(self) -> bool:
+        return len(self.images) > 1
 
 
 @dataclass
@@ -148,6 +209,8 @@ class ContainerStatus:
     ip: str = ""
     ports: List[PortMapping] = field(default_factory=list)
     container_id: str = ""
+    slug: str = ""                                   # label es.dockerlabs.slug
+    network_ips: dict = field(default_factory=dict)  # red → IP (labs de pivoting)
 
     @property
     def is_running(self) -> bool:
@@ -225,6 +288,23 @@ def _can_bind_privileged() -> bool:
         return False
 
 
+def host_is_arm() -> bool:
+    m = platform.machine().lower()
+    return m in ("arm64", "aarch64") or m.startswith("arm")
+
+
+def needs_amd64_emulation(image: "ImageInfo") -> bool:
+    """El auto_deploy.sh oficial añade `--platform linux/amd64` en macOS/Linux ARM."""
+    if not host_is_arm():
+        return False
+    return (image.architecture or "amd64").lower() in ("amd64", "x86_64")
+
+
+def _natural_key(name: str):
+    """'grandma10.tar' después de 'grandma2.tar'."""
+    return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", name)]
+
+
 # =====================================================================
 # Extracción e inspección del zip / tar
 # =====================================================================
@@ -264,14 +344,46 @@ def extract_lab(zip_path: Path, labs_dir: Path, slug: Optional[str] = None,
             if on_progress:
                 on_progress(done, total)
 
-    tars = sorted(root.glob("*.tar"), key=lambda p: p.stat().st_size, reverse=True)
+    tars = sorted(root.glob("*.tar"), key=lambda p: _natural_key(p.name))
     if not tars:
         raise InvalidLabArchive(
             "El zip no contiene ningún .tar de imagen Docker. "
             "¿Es realmente una máquina de DockerLabs?"
         )
     script = next(iter(root.glob("*.sh")), None)
-    return LabFiles(slug=slug, root=root, tar_path=tars[0], deploy_script=script)
+    return LabFiles(slug=slug, root=root, tar_path=tars[0], deploy_script=script,
+                    tar_paths=tars)
+
+
+def pivoting_networks(count: int, prefix: str = "") -> List[NetworkSpec]:
+    """Redes que crea el auto_deploy.sh de pivoting para `count` máquinas.
+
+    Idéntico al script oficial: ``pivotingN`` con subred ``N0.N0.N0.0/24`` y
+    gateway ``.1``; la primera bridge (accesible desde el host) y el resto
+    macvlan internas (solo alcanzables pivotando). `prefix` evita chocar con
+    redes del usuario y permite borrarlas sin miedo.
+    """
+    out: List[NetworkSpec] = []
+    for i in range(1, count + 1):
+        o = i * 10
+        out.append(NetworkSpec(name=f"{prefix}pivoting{i}", subnet=f"{o}.{o}.{o}.0/24",
+                               gateway=f"{o}.{o}.{o}.1", driver="bridge" if i == 1 else "macvlan",
+                               internal=i != 1))
+    return out
+
+
+def build_deploy_plan(files: LabFiles, machine: str, strategy: str,
+                      images: Optional[Sequence["ImageInfo"]] = None) -> DeployPlan:
+    """Plan de despliegue equivalente al `auto_deploy.sh` del zip."""
+    imgs = list(images) if images is not None else [inspect_image_tar(t) for t in files.tar_paths]
+    base = container_name_for(files.slug)
+    if len(imgs) == 1:
+        return DeployPlan(slug=files.slug, machine=machine, images=imgs,
+                          container_names=[base], strategy=strategy)
+    names = [f"{base}_{i + 1}" for i in range(len(imgs))]
+    nets = pivoting_networks(len(imgs), prefix=f"{base}_")
+    return DeployPlan(slug=files.slug, machine=machine, images=imgs, container_names=names,
+                      networks=nets, strategy=strategy)
 
 
 def inspect_image_tar(tar_path: Path) -> ImageInfo:
