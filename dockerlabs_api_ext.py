@@ -95,6 +95,25 @@ class DockerLabsExtClient(DockerLabsClient):
         except json.JSONDecodeError:
             raise DockerLabsError("author_profile devolvió no-JSON")
 
+    def machine_rating(self, nombre: str) -> dict:
+        """GET /api/get_machine_rating/<nombre> → {average, count, details{...}, user_rating}."""
+        url = self.base_url + "/api/get_machine_rating/" + urllib.parse.quote(nombre, safe="")
+        status, _, raw = self._request(url)
+        if status != 200:
+            raise DockerLabsError(f"HTTP {status} en get_machine_rating")
+        try:
+            return json.loads(raw.decode("utf-8", errors="ignore"))
+        except json.JSONDecodeError:
+            raise DockerLabsError("get_machine_rating devolvió no-JSON")
+
+    def fetch_bytes(self, url_or_path: str) -> bytes:
+        """Descarga binaria (imágenes). Acepta ruta relativa o URL absoluta."""
+        url = url_or_path if url_or_path.startswith("http") else self.base_url + "/" + url_or_path.lstrip("/")
+        status, _, raw = self._request(url)
+        if status != 200:
+            raise DockerLabsError(f"HTTP {status} en {url}")
+        return bytes(raw)
+
     def is_session_valid(self) -> bool:
         """Verifica que la cookie actual sigue válida pidiendo la home.
 
