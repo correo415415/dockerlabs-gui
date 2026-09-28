@@ -130,36 +130,36 @@ Implementado en `lab_manager.py` (núcleo sin Qt, testeable), `lab_controller.py
       Si la app corre como root no se pide nada.
 - [ ] (Opcional) Verificación E2E con Docker real (`docker load` + `run`) — pendiente de entorno.
 
-## 3. Mejoras de GUI (apariencia)  `[ ]`
+## 3. Mejoras de GUI (apariencia)  `[~]`
 
-- [ ] Panel de **detalle de máquina** (clic en fila): imagen `/img/maquina/<id>`, descripción,
+- [x] Panel de **detalle de máquina** (clic en fila): imagen `/img/maquina/<id>`, descripción,
       autor con avatar, rating (`get_machine_rating`), writeups (`/api/writeups/<n>`), botones
       Descargar / Lanzar / Marcar completada / Abrir en web.
-- [ ] Tabla de máquinas: `QTableView` + `QAbstractTableModel` + `QSortFilterProxyModel`
+- [x] Tabla de máquinas: `QTableView` + `QAbstractTableModel` + `QSortFilterProxyModel`
       (rendimiento con 200+ filas, filtro instantáneo, orden estable).
-- [ ] Badges de dificultad con color de fondo (como la web) en lugar de solo texto.
-- [ ] Dashboard con progreso real (barra completadas/total, desglose por dificultad, últimas
+- [x] Badges de dificultad con color de fondo (como la web) en lugar de solo texto.
+- [x] Dashboard con progreso real (barra completadas/total, desglose por dificultad, últimas
       máquinas añadidas, ranking de creadores desde `ranking_creadores`).
-- [ ] Página Descargas: scroll cuando hay muchas, botón "Limpiar terminadas".
-- [ ] Página Completadas: buscador + agrupación por dificultad + botón desmarcar.
-- [ ] Ajustes: descargas simultáneas, tema (oscuro/claro), estrategia de red Docker,
-      auto-extraer tras descargar.
-- [ ] Iconos nuevos: `play`, `stop`, `docker`, `terminal`, `star`, `external-link`, `flask`.
-- [ ] Atajos de teclado: `Ctrl+F` buscar, `Ctrl+1..7` navegación, `F5` refrescar catálogo.
+- [x] Página Descargas: scroll cuando hay muchas, botón "Limpiar terminadas".
+- [x] Página Completadas: buscador + agrupación por dificultad + botón desmarcar.
+- [~] Ajustes: descargas simultáneas `[x]`, estrategia de red Docker `[x]`; tema claro y
+      auto-extraer tras descargar pendientes.
+- [x] Iconos nuevos: `play`, `stop`, `docker`, `terminal`, `star`, `external-link`, `flask`.
+- [x] Atajos de teclado: `Ctrl+F` buscar, `Ctrl+1..7` navegación, `F5` refrescar catálogo.
 - [ ] Estado vacío/loading con skeleton o spinner en la tabla (no texto plano).
 
-## 4. Estabilidad / calidad  `[ ]`
+## 4. Estabilidad / calidad  `[~]`
 
 - [x] `logging` a fichero rotativo `~/.dockerlabs-gui/logs/app.log` + `sys.excepthook` que
       muestra un diálogo en lugar de morir en silencio.
 - [x] Sustituir todos los `except Exception: pass` por logging con contexto (main.py).
 - [ ] Refactor `MainWindow`: extraer `SessionController`, `CatalogController`.
-- [ ] Catálogo directamente desde JSON cacheado (`catalog.json`) — el CSV pasa a ser export opcional.
+- [x] Catálogo directamente desde JSON cacheado (`catalog.json`) — el CSV pasa a ser export opcional.
 - [ ] `completed_machines_from_home()` parseo robusto con `html.parser` (no regex).
 - [x] Eliminar monkey-patch de `mouseReleaseEvent` (señal `Sidebar.profile_clicked` vía `eventFilter`).
 - [ ] Workers: clase base `BaseWorker(QThread)` con `finished` → auto-limpieza sin lambdas.
-- [ ] Reintentos en catálogo (`/api`) con timeout corto y fallback a caché.
-- [ ] Tests `pytest` (sin GUI): parser de API, planificador de puertos, extractor de manifest,
+- [x] Reintentos en catálogo (`/api`) con timeout corto y fallback a caché.
+- [x] Tests `pytest` (sin GUI): parser de API, planificador de puertos, extractor de manifest,
       downloader con servidor HTTP local, normalización de nombres. Tests de UI con
       `QT_QPA_PLATFORM=offscreen`.
 - [x] `pyproject.toml`: bump versión, dependencias, `ruff` config; `requirements.txt`.
