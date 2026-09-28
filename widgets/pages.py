@@ -40,6 +40,7 @@ from theme import (
     FG_MUTED,
     FG_PRIMARY,
     FG_SECONDARY,
+    ON_ACCENT,
     SUCCESS,
     WARNING,
     difficulty_color,
@@ -143,7 +144,7 @@ def page_header(title: str, subtitle: str) -> QFrame:
     bar = QFrame()
     bar.setObjectName("topbar")
     bar.setStyleSheet(
-        f"QFrame#topbar {{ background: {BG_MID}; border-bottom: 1px solid #2a2f3a; }}"
+        f"QFrame#topbar {{ background: {BG_MID}; border-bottom: 1px solid {BORDER_SOFT}; }}"
     )
     bar.setFixedHeight(72)
     layout = QVBoxLayout(bar)
@@ -511,7 +512,7 @@ class MachinesPage(QWidget):
         search_wrap = QFrame()
         search_wrap.setObjectName("searchWrap")
         search_wrap.setStyleSheet(
-            f"QFrame#searchWrap {{ background: {BG_LIGHT}; border: 1px solid #2a2f3a;"
+            f"QFrame#searchWrap {{ background: {BG_LIGHT}; border: 1px solid {BORDER_SOFT};"
             f" border-radius: 8px; }}"
         )
         sl = QHBoxLayout(search_wrap)
@@ -759,10 +760,10 @@ class MachinesPage(QWidget):
         menu = QMenu(self)
         menu.setStyleSheet(
             f"QMenu {{ background: {BG_MID}; color: {FG_PRIMARY};"
-            f" border: 1px solid #2a2f3a; padding: 6px; border-radius: 8px; }}"
+            f" border: 1px solid {BORDER_SOFT}; padding: 6px; border-radius: 8px; }}"
             f"QMenu::item {{ padding: 8px 28px 8px 14px; border-radius: 6px; }}"
             f"QMenu::item:selected {{ background: {BG_LIGHT}; color: {ACCENT}; }}"
-            f"QMenu::separator {{ height: 1px; background: #2a2f3a; margin: 4px 8px; }}"
+            f"QMenu::separator {{ height: 1px; background: {BORDER_SOFT}; margin: 4px 8px; }}"
         )
         act_detail = QAction(svg_icon("info", FG_PRIMARY, 16), "Ver detalle", self)
         act_detail.triggered.connect(lambda: self.show_detail(name))
@@ -815,7 +816,7 @@ class DownloadItemWidget(QFrame):
         self.setProperty("class", "card")
         self.setObjectName("downloadItem")
         self.setStyleSheet(
-            f"QFrame#downloadItem {{ background: {BG_MID}; border: 1px solid #2a2f3a;"
+            f"QFrame#downloadItem {{ background: {BG_MID}; border: 1px solid {BORDER_SOFT};"
             f" border-radius: 12px; }}"
         )
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -1062,7 +1063,7 @@ class CompletedPage(QWidget):
         top.addWidget(self.chk_group)
         self.btn_refresh = QPushButton("  Sincronizar")
         self.btn_refresh.setProperty("class", "primary")
-        self.btn_refresh.setIcon(svg_icon("refresh", "#0b1316", 16))
+        self.btn_refresh.setIcon(svg_icon("refresh", ON_ACCENT, 16))
         self.btn_refresh.setMinimumHeight(34)
         self.btn_refresh.clicked.connect(self.request_refresh.emit)
         top.addWidget(self.btn_refresh)
@@ -1070,7 +1071,7 @@ class CompletedPage(QWidget):
 
         self.list_widget = QListWidget()
         self.list_widget.setStyleSheet(
-            f"QListWidget {{ background: {BG_MID}; border: 1px solid #2a2f3a;"
+            f"QListWidget {{ background: {BG_MID}; border: 1px solid {BORDER_SOFT};"
             f" border-radius: 12px; padding: 8px; color: {FG_PRIMARY}; }}"
             f"QListWidget::item {{ padding: 8px 12px; border: none; border-radius: 6px; }}"
             f"QListWidget::item:selected {{ background: {BG_LIGHT}; }}"
@@ -1215,7 +1216,7 @@ class SessionPage(QWidget):
         self.login_card = QFrame()
         self.login_card.setObjectName("loginCard")
         self.login_card.setStyleSheet(
-            f"QFrame#loginCard {{ background: {BG_MID}; border: 1px solid #2a2f3a;"
+            f"QFrame#loginCard {{ background: {BG_MID}; border: 1px solid {BORDER_SOFT};"
             f" border-radius: 12px; }}"
         )
         cl = QGridLayout(self.login_card)
@@ -1231,7 +1232,7 @@ class SessionPage(QWidget):
 
         self.btn_login = QPushButton("Iniciar sesión")
         self.btn_login.setProperty("class", "primary")
-        self.btn_login.setIcon(svg_icon("session", "#0b1316", 16))
+        self.btn_login.setIcon(svg_icon("session", ON_ACCENT, 16))
         self.btn_login.setMinimumHeight(40)
         self.btn_login.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_login.clicked.connect(self._emit_login)
@@ -1254,7 +1255,7 @@ class SessionPage(QWidget):
         self.profile_card = QFrame()
         self.profile_card.setObjectName("profileCard")
         self.profile_card.setStyleSheet(
-            f"QFrame#profileCard {{ background: {BG_MID}; border: 1px solid #2a2f3a;"
+            f"QFrame#profileCard {{ background: {BG_MID}; border: 1px solid {BORDER_SOFT};"
             f" border-radius: 12px; }}"
         )
         pl = QVBoxLayout(self.profile_card)
@@ -1295,7 +1296,7 @@ class SessionPage(QWidget):
         btn_row = QHBoxLayout()
         btn_row.addStretch(1)
         self.btn_logout = QPushButton("  Cerrar sesión")
-        self.btn_logout.setIcon(svg_icon("logout", "#0b1316", 16))
+        self.btn_logout.setIcon(svg_icon("logout", ON_ACCENT, 16))
         self.btn_logout.setProperty("class", "primary")
         self.btn_logout.setMinimumHeight(40)
         self.btn_logout.setMinimumWidth(180)
@@ -1413,14 +1414,14 @@ class SettingsPage(QWidget):
         self.in_dir.setMinimumHeight(36)
         self.in_dir.setObjectName("dirInput")
         self.in_dir.setStyleSheet(
-            f"QLineEdit#dirInput {{ background: {BG_LIGHT}; border: 1px solid #2a2f3a;"
+            f"QLineEdit#dirInput {{ background: {BG_LIGHT}; border: 1px solid {BORDER_SOFT};"
             f" border-radius: 8px; padding: 8px 10px; color: {FG_PRIMARY}; }}"
         )
         row_dir.addWidget(self.in_dir, 1)
 
         self.btn_browse = QPushButton("Cambiar…")
         self.btn_browse.setProperty("class", "primary")
-        self.btn_browse.setIcon(svg_icon("folder", "#0b1316", 16))
+        self.btn_browse.setIcon(svg_icon("folder", ON_ACCENT, 16))
         self.btn_browse.setMinimumHeight(36)
         self.btn_browse.clicked.connect(self._on_browse)
         row_dir.addWidget(self.btn_browse)
@@ -1524,7 +1525,7 @@ class SettingsPage(QWidget):
         card = QFrame()
         card.setObjectName("settingsCard")
         card.setStyleSheet(
-            f"QFrame#settingsCard {{ background: {BG_MID}; border: 1px solid #2a2f3a;"
+            f"QFrame#settingsCard {{ background: {BG_MID}; border: 1px solid {BORDER_SOFT};"
             f" border-radius: 12px; }}"
         )
         lay = QVBoxLayout(card)

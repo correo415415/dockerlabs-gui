@@ -26,6 +26,7 @@ from theme import (
     FG_MUTED,
     FG_PRIMARY,
     FG_SECONDARY,
+    ON_ACCENT,
     SUCCESS,
     WARNING,
 )
@@ -113,7 +114,7 @@ class LabItemWidget(QFrame):
         row.setSpacing(8)
         self.btn_copy = _btn("Copiar IP", "ip", FG_PRIMARY)
         self.btn_shell = _btn("Shell", "terminal", FG_PRIMARY)
-        self.btn_start = _btn("Iniciar", "play", "#0b1316", "primary")
+        self.btn_start = _btn("Iniciar", "play", ON_ACCENT, "primary")
         self.btn_stop = _btn("Detener", "stop", FG_PRIMARY)
         self.btn_restart = _btn("Reiniciar", "restart", FG_PRIMARY)
         self.btn_remove = _btn("Eliminar", "trash", DANGER, "danger")
@@ -234,12 +235,12 @@ class LabPage(QWidget):
         dl.addLayout(txt, 1)
         btns = QVBoxLayout()
         btns.setSpacing(6)
-        self.btn_grant = _btn("Conceder acceso", "shield", "#0b1316", "primary")
+        self.btn_grant = _btn("Conceder acceso", "shield", ON_ACCENT, "primary")
         self.btn_grant.setToolTip(
             "Se abrirá el diálogo de autenticación del sistema (pkexec/sudo) para añadir tu "
             "usuario al grupo docker y dar acceso inmediato al socket.")
         self.btn_grant.clicked.connect(self.request_grant_access.emit)
-        self.btn_start_service = _btn("Iniciar servicio", "power", "#0b1316", "primary")
+        self.btn_start_service = _btn("Iniciar servicio", "power", ON_ACCENT, "primary")
         self.btn_start_service.setToolTip("Arranca el servicio docker (pide permisos de administrador).")
         self.btn_start_service.clicked.connect(self.request_start_service.emit)
         self.btn_refresh = _btn("Actualizar", "refresh", FG_PRIMARY)
@@ -284,7 +285,7 @@ class LabPage(QWidget):
         e_txt.setWordWrap(True)
         e_txt.setStyleSheet(f"color: {FG_MUTED}; font-size: 13px;")
         el.addWidget(e_txt)
-        e_btn = _btn("Ir a Máquinas", "machines", "#0b1316", "primary")
+        e_btn = _btn("Ir a Máquinas", "machines", ON_ACCENT, "primary")
         e_btn.clicked.connect(self.request_go_machines.emit)
         eb = QHBoxLayout(); eb.addStretch(1); eb.addWidget(e_btn); eb.addStretch(1)
         el.addLayout(eb)

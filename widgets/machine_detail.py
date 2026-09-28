@@ -28,6 +28,7 @@ from theme import (
     FG_MUTED,
     FG_PRIMARY,
     FG_SECONDARY,
+    ON_ACCENT,
     SUCCESS,
     WARNING,
     difficulty_color,
@@ -201,9 +202,9 @@ class MachineDetailPanel(QFrame):
             ml.addWidget(w)
         lay.addWidget(meta)
 
-        self.btn_download = _btn("Descargar", "download", "#0b1316", "primary")
+        self.btn_download = _btn("Descargar", "download", ON_ACCENT, "primary")
         self.btn_cancel = _btn("Cancelar descarga", "x", DANGER, "danger")
-        self.btn_launch = _btn("Lanzar laboratorio", "docker", "#0b1316", "primary")
+        self.btn_launch = _btn("Lanzar laboratorio", "docker", ON_ACCENT, "primary")
         self.btn_lab = _btn("Ver en Laboratorio", "docker", SUCCESS)
         self.btn_done = _btn("Marcar como completada", "check", ACCENT)
         self.btn_web = _btn("Abrir en dockerlabs.es", "external-link", FG_PRIMARY)

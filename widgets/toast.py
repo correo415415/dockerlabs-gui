@@ -34,6 +34,7 @@ from theme import (
     ACCENT,
     BG_LIGHT,
     BG_MID,
+    BORDER_SOFT,
     DANGER,
     FG_MUTED,
     FG_PRIMARY,
@@ -81,7 +82,7 @@ class Toast(QFrame):
         self.setFixedWidth(self.WIDTH)
         self.setStyleSheet(
             f"QFrame#toast {{ background: {BG_MID};"
-            f" border: 1px solid #2a2f3a; border-left: 4px solid {self._accent};"
+            f" border: 1px solid {BORDER_SOFT}; border-left: 4px solid {self._accent};"
             f" border-radius: 10px; }}"
             f"QFrame#toast:hover {{ background: {BG_LIGHT}; }}"
         )

@@ -21,7 +21,7 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtWidgets import QLabel, QSizePolicy
 
-from theme import ACCENT, BG_LIGHT, BG_SIDEBAR, DANGER, FG_MUTED, FG_PRIMARY, SUCCESS
+from theme import ACCENT, BG_LIGHT, BG_SIDEBAR, BORDER, DANGER, FG_MUTED, FG_PRIMARY, SUCCESS
 from widgets.icons import pixmap as svg_pixmap
 from workers import BaseWorker
 
@@ -147,7 +147,7 @@ class AvatarCircle(QLabel):
         painter.setClipping(False)
 
         # Borde
-        border_color = QColor(ACCENT) if self._online else QColor("#3a3f4b")
+        border_color = QColor(ACCENT) if self._online else QColor(BORDER)
         painter.setPen(QPen(border_color, 2))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawEllipse(rectf.adjusted(1, 1, -1, -1))
