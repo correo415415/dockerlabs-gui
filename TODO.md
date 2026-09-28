@@ -97,6 +97,10 @@ breakmyssh.zip
 - [x] Eliminar `mega_downloader.py` y `pycryptodome` de dependencias (dejar compat: si un
       link es de MEGA, mostrar aviso "formato no soportado").
 - [x] Textos de UI: "Descargar desde MEGA" → "Descargar".
+- [x] **Velocidad**: medido empíricamente, el servidor limita cada conexión a ~540 KB/s y no
+      admite `Range`, así que una máquina no puede bajar más rápido (no hay throttling en el
+      cliente). Sí se pueden bajar varias a la vez (ajuste "descargas simultáneas", por defecto 2).
+      Documentado en `http_downloader.py`, Ajustes y README.
 
 ## 2. Lanzar CTFs (multiplataforma)  `[x]`
 
@@ -128,9 +132,19 @@ Implementado en `lab_manager.py` (núcleo sin Qt, testeable), `lab_controller.py
       arranque del servicio y `setfacl -m u:$USER:rw` sobre el socket para que funcione **sin
       cerrar sesión**. Si el servicio está parado se ofrece **«Iniciar servicio»** (elevado).
       Si la app corre como root no se pide nada.
+- [x] **Labs multi-máquina (pivoting)**: se analizaron los `auto_deploy.sh` oficiales (Trust,
+      Pinguinazo, Grandma). Ninguno arranca servicios: sólo `docker load` + `docker run -d`
+      (+ `--platform linux/amd64` en hosts ARM). Grandma además crea redes `pivotingN`
+      (`N0.N0.N0.0/24`, la 1ª bridge `--attachable`, el resto macvlan `--internal`) y encadena
+      contenedores con `network connect`; **al salir borra TODOS los contenedores del sistema**.
+      Nuestro deploy (`build_deploy_plan`/`deploy_plan`) reproduce las redes y el encadenado con
+      nombres/labels propios (`dockerlabs_<slug>_N`, `dockerlabs_<slug>_pivotingN`) y el
+      teardown/rollback **sólo toca los recursos del lab** (`teardown_lab`). Tests en
+      `tests/test_lab_pivoting.py`.
+- [x] Descompresión **sólo** al lanzar la máquina (no se auto-extrae al descargar, por decisión).
 - [ ] (Opcional) Verificación E2E con Docker real (`docker load` + `run`) — pendiente de entorno.
 
-## 3. Mejoras de GUI (apariencia)  `[~]`
+## 3. Mejoras de GUI (apariencia)  `[x]`
 
 - [x] Panel de **detalle de máquina** (clic en fila): imagen `/img/maquina/<id>`, descripción,
       autor con avatar, rating (`get_machine_rating`), writeups (`/api/writeups/<n>`), botones
@@ -142,22 +156,26 @@ Implementado en `lab_manager.py` (núcleo sin Qt, testeable), `lab_controller.py
       máquinas añadidas, ranking de creadores desde `ranking_creadores`).
 - [x] Página Descargas: scroll cuando hay muchas, botón "Limpiar terminadas".
 - [x] Página Completadas: buscador + agrupación por dificultad + botón desmarcar.
-- [~] Ajustes: descargas simultáneas `[x]`, estrategia de red Docker `[x]`; tema claro y
-      auto-extraer tras descargar pendientes.
+- [x] Ajustes: descargas simultáneas, estrategia de red Docker, **tema Oscuro/Claro**
+      (persistido; se aplica al arrancar y se ofrece reiniciar al cambiarlo). Auto-extraer
+      descartado a propósito (la extracción ocurre sólo al lanzar).
 - [x] Iconos nuevos: `play`, `stop`, `docker`, `terminal`, `star`, `external-link`, `flask`.
 - [x] Atajos de teclado: `Ctrl+F` buscar, `Ctrl+1..7` navegación, `F5` refrescar catálogo.
-- [ ] Estado vacío/loading con skeleton o spinner en la tabla (no texto plano).
+- [x] Estado loading con skeleton shimmer + spinner en la tabla (`widgets/skeleton.py`).
 
-## 4. Estabilidad / calidad  `[~]`
+## 4. Estabilidad / calidad  `[x]`
 
 - [x] `logging` a fichero rotativo `~/.dockerlabs-gui/logs/app.log` + `sys.excepthook` que
       muestra un diálogo en lugar de morir en silencio.
 - [x] Sustituir todos los `except Exception: pass` por logging con contexto (main.py).
-- [ ] Refactor `MainWindow`: extraer `SessionController`, `CatalogController`.
+- [x] Refactor `MainWindow`: `SessionController` (login/restore/logout/completadas/sync) y
+      `CatalogController` (caché + refresco) sin UI; la ventana sólo conecta señales.
 - [x] Catálogo directamente desde JSON cacheado (`catalog.json`) — el CSV pasa a ser export opcional.
-- [ ] `completed_machines_from_home()` parseo robusto con `html.parser` (no regex).
+- [x] `completed_machines_from_home()` parseo robusto con `html.parser` (`parse_completed_machines`).
 - [x] Eliminar monkey-patch de `mouseReleaseEvent` (señal `Sidebar.profile_clicked` vía `eventFilter`).
-- [ ] Workers: clase base `BaseWorker(QThread)` con `finished` → auto-limpieza sin lambdas.
+- [x] Workers: `workers.py` con `BaseWorker(QThread)` (`work()`, errores → `failed`, cancelación
+      cooperativa, `deleteLater` automático) y `WorkerPool` (`track`/`shutdown`). Todos los
+      workers migrados.
 - [x] Reintentos en catálogo (`/api`) con timeout corto y fallback a caché.
 - [x] Tests `pytest` (sin GUI): parser de API, planificador de puertos, extractor de manifest,
       downloader con servidor HTTP local, normalización de nombres. Tests de UI con
