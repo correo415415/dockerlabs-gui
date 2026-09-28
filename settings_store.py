@@ -14,6 +14,14 @@ def _valid_theme(value) -> str:
     return value if value in ("dark", "light") else "dark"
 
 
+DOCKER_NETWORK_MODES = ("auto", "bridge", "bridge+ports", "host")
+
+
+def _valid_network(value) -> str:
+    """Modo de red al lanzar labs. Por defecto (y ante cualquier valor raro) `auto`."""
+    return value if value in DOCKER_NETWORK_MODES else "auto"
+
+
 @dataclass
 class UserSettings:
     downloads_dir: str = ""
@@ -30,7 +38,7 @@ class UserSettings:
             os_notifications=bool(data.get("os_notifications", True)),
             in_app_notifications=bool(data.get("in_app_notifications", True)),
             max_concurrent_downloads=max(1, min(6, int(data.get("max_concurrent_downloads", 2) or 2))),
-            docker_network=str(data.get("docker_network", "auto") or "auto"),
+            docker_network=_valid_network(data.get("docker_network")),
             theme=_valid_theme(data.get("theme")),
         )
 
