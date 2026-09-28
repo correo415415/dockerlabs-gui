@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PyQt6.QtCore import QByteArray, QObject, QRect, QRectF, QSize, Qt, QThread, pyqtSignal
+from PyQt6.QtCore import QByteArray, QObject, QRect, QRectF, QSize, Qt, pyqtSignal
 from PyQt6.QtGui import (
     QBrush,
     QColor,
@@ -23,26 +23,23 @@ from PyQt6.QtWidgets import QLabel, QSizePolicy
 
 from theme import ACCENT, BG_LIGHT, BG_SIDEBAR, DANGER, FG_MUTED, FG_PRIMARY, SUCCESS
 from widgets.icons import pixmap as svg_pixmap
+from workers import BaseWorker
 
 
-class _AvatarFetcher(QThread):
+class _AvatarFetcher(BaseWorker):
     finished_data = pyqtSignal(bytes, str)
-    failed = pyqtSignal(str)
 
     def __init__(self, client, url: str, parent: Optional[QObject] = None) -> None:
         super().__init__(parent)
         self.client = client
         self.url = url
 
-    def run(self) -> None:
-        try:
-            status, _, data = self.client._request(self.url)
-            if status == 200 and data:
-                self.finished_data.emit(bytes(data), self.url)
-            else:
-                self.failed.emit(f"HTTP {status}")
-        except Exception as exc:  # noqa: BLE001
-            self.failed.emit(str(exc))
+    def work(self) -> None:
+        status, _, data = self.client._request(self.url)
+        if status == 200 and data:
+            self.finished_data.emit(bytes(data), self.url)
+        else:
+            self.failed.emit(f"HTTP {status}")
 
 
 class AvatarCircle(QLabel):
@@ -94,12 +91,19 @@ class AvatarCircle(QLabel):
             return
         if not profile_path.startswith("http"):
             profile_path = client.base_url.rstrip("/") + profile_path
-        if self._thread and self._thread.isRunning():
-            self._thread.quit()
-            self._thread.wait(100)
+        try:
+            if self._thread and self._thread.isRunning():
+                self._thread.cancel()
+                self._thread.wait(100)
+        except RuntimeError:
+            pass  # el worker anterior ya se destruyó (auto deleteLater)
         self._thread = _AvatarFetcher(client, profile_path, self)
         self._thread.finished_data.connect(lambda data, _u: self.set_pixmap_from_bytes(data))
+        self._thread.finished.connect(self._forget_thread)
         self._thread.start()
+
+    def _forget_thread(self) -> None:
+        self._thread = None
 
     # ---- Pintado ----
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Dict, Optional
 
-from PyQt6.QtCore import QObject, QPoint, Qt, QThread, pyqtSignal
+from PyQt6.QtCore import QObject, QPoint, Qt, pyqtSignal
 from PyQt6.QtGui import QAction, QColor, QPalette
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -46,25 +46,21 @@ from theme import (
 )
 from widgets.avatar import AvatarCircle
 from widgets.icons import icon as svg_icon
+from workers import BaseWorker
 
 # ============================================================
 # Workers compartidos
 # ============================================================
 
-class FetchAPIWorker(QThread):
+class FetchAPIWorker(BaseWorker):
     finished_data = pyqtSignal(dict)
-    failed = pyqtSignal(str)
 
     def __init__(self, client, parent: Optional[QObject] = None) -> None:
         super().__init__(parent)
         self.client = client
 
-    def run(self) -> None:
-        try:
-            data = self.client.fetch_api_data()
-            self.finished_data.emit(data)
-        except Exception as exc:  # noqa: BLE001
-            self.failed.emit(str(exc))
+    def work(self) -> None:
+        self.finished_data.emit(self.client.fetch_api_data())
 
 
 # ============================================================

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Dict, List, Optional
 
-from PyQt6.QtCore import QObject, Qt, QThread, QUrl, pyqtSignal
+from PyQt6.QtCore import QObject, Qt, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices, QImage, QPainter, QPainterPath, QPixmap
 from PyQt6.QtWidgets import (
     QFrame,
@@ -33,40 +33,41 @@ from theme import (
     difficulty_color,
 )
 from widgets.icons import icon as svg_icon
+from workers import BaseWorker, WorkerPool
 
 logger = logging.getLogger(__name__)
 
 _IMG_W, _IMG_H = 300, 168
 
 
-class _ImageFetcher(QThread):
+class _ImageFetcher(BaseWorker):
     done = pyqtSignal(str, bytes)
-    failed = pyqtSignal(str, str)
+    failed = pyqtSignal(str, str)   # url, error
 
     def __init__(self, client, url: str, parent: Optional[QObject] = None) -> None:
         super().__init__(parent)
         self.client, self.url = client, url
 
-    def run(self) -> None:
-        try:
-            self.done.emit(self.url, self.client.fetch_bytes(self.url))
-        except Exception as exc:  # noqa: BLE001
-            self.failed.emit(self.url, str(exc))
+    def work(self) -> None:
+        self.done.emit(self.url, self.client.fetch_bytes(self.url))
+
+    def on_error(self, exc: BaseException) -> None:
+        self.failed.emit(self.url, self.format_error(exc))
 
 
-class _RatingFetcher(QThread):
+class _RatingFetcher(BaseWorker):
     done = pyqtSignal(str, dict)
-    failed = pyqtSignal(str, str)
+    failed = pyqtSignal(str, str)   # name, error
 
     def __init__(self, client, name: str, parent: Optional[QObject] = None) -> None:
         super().__init__(parent)
         self.client, self.name = client, name
 
-    def run(self) -> None:
-        try:
-            self.done.emit(self.name, self.client.machine_rating(self.name))
-        except Exception as exc:  # noqa: BLE001
-            self.failed.emit(self.name, str(exc))
+    def work(self) -> None:
+        self.done.emit(self.name, self.client.machine_rating(self.name))
+
+    def on_error(self, exc: BaseException) -> None:
+        self.failed.emit(self.name, self.format_error(exc))
 
 
 def _rounded(pm: QPixmap, radius: int = 12) -> QPixmap:
@@ -122,7 +123,7 @@ class MachineDetailPanel(QFrame):
         self._writeups: List[Writeup] = []
         self._img_cache: Dict[str, QPixmap] = {}
         self._rating_cache: Dict[str, dict] = {}
-        self._workers: List[QThread] = []
+        self._workers = WorkerPool()
         self._status = dict(done=False, downloading=False, downloaded=False, running=False)
 
         self.setObjectName("detailPanel")
@@ -296,12 +297,7 @@ class MachineDetailPanel(QFrame):
         self._refresh_buttons()
 
     def shutdown(self) -> None:
-        for w in list(self._workers):
-            try:
-                if w.isRunning():
-                    w.wait(1000)
-            except RuntimeError:
-                pass
+        self._workers.shutdown(1000)
 
     # ------------------------------------------------------------ internos
     def _writeup_row(self, wu: Writeup) -> QWidget:
@@ -347,15 +343,8 @@ class MachineDetailPanel(QFrame):
         if self.machine:
             QDesktopServices.openUrl(QUrl(self.machine.machine_page_url))
 
-    def _track(self, w: QThread) -> None:
-        self._workers.append(w)
-        w.finished.connect(lambda: self._untrack(w))
-        w.start()
-
-    def _untrack(self, w: QThread) -> None:
-        if w in self._workers:
-            self._workers.remove(w)
-        w.deleteLater()
+    def _track(self, w: BaseWorker) -> None:
+        self._workers.track(w)
 
     def _on_image(self, url: str, data: bytes) -> None:
         img = QImage.fromData(data)
