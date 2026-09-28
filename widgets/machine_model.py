@@ -25,6 +25,17 @@ from widgets.icons import icon as svg_icon
 
 COL_DONE, COL_STATE, COL_NAME, COL_DIFF, COL_AUTHOR, COL_DATE = range(6)
 HEADERS = ["", "", "Nombre", "Dificultad", "Autor", "Fecha"]
+# Las dos primeras columnas son estrechas (solo icono); en la cabecera se muestra un
+# icono + tooltip para que se sepa qué representan.
+HEADER_ICONS = {COL_DONE: "check", COL_STATE: "download"}
+HEADER_TOOLTIPS = {
+    COL_DONE: "Completada — marcada como resuelta en tu cuenta de DockerLabs",
+    COL_STATE: "Estado local — descargada, descargando o laboratorio en ejecución",
+    COL_NAME: "Nombre de la máquina",
+    COL_DIFF: "Dificultad según DockerLabs",
+    COL_AUTHOR: "Autor de la máquina",
+    COL_DATE: "Fecha de publicación",
+}
 
 ROLE_MACHINE = Qt.ItemDataRole.UserRole + 1
 ROLE_SORT = Qt.ItemDataRole.UserRole + 2
@@ -104,8 +115,14 @@ class MachineTableModel(QAbstractTableModel):
         return 0 if parent.isValid() else len(HEADERS)
 
     def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):  # noqa: N802
-        if orientation == Qt.Orientation.Horizontal and role == Qt.ItemDataRole.DisplayRole:
+        if orientation != Qt.Orientation.Horizontal or not (0 <= section < len(HEADERS)):
+            return None
+        if role == Qt.ItemDataRole.DisplayRole:
             return HEADERS[section]
+        if role == Qt.ItemDataRole.ToolTipRole:
+            return HEADER_TOOLTIPS.get(section)
+        if role == Qt.ItemDataRole.DecorationRole and section in HEADER_ICONS:
+            return svg_icon(HEADER_ICONS[section], FG_MUTED, 14)
         return None
 
     def data(self, index: QModelIndex, role=Qt.ItemDataRole.DisplayRole):

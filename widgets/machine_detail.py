@@ -6,7 +6,7 @@ import logging
 from typing import Dict, List, Optional
 
 from PyQt6.QtCore import QObject, Qt, QUrl, pyqtSignal
-from PyQt6.QtGui import QDesktopServices, QImage, QPainter, QPainterPath, QPixmap
+from PyQt6.QtGui import QColor, QDesktopServices, QImage, QPainter, QPainterPath, QPixmap
 from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -84,10 +84,21 @@ def _rounded(pm: QPixmap, radius: int = 12) -> QPixmap:
     return out
 
 
+def _rgba(color: str, alpha: float) -> str:
+    """`#rrggbb` → `rgba(r, g, b, a)` para QSS.
+
+    Nota: Qt interpreta `#RRGGBBAA` como `#AARRGGBB`, así que concatenar el alfa
+    al final del hex cambia el color por completo (los badges salían de otro color).
+    """
+    c = QColor(color)
+    return f"rgba({c.red()}, {c.green()}, {c.blue()}, {alpha:.2f})"
+
+
 def badge(text: str, color: str) -> QLabel:
     lb = QLabel(text)
     lb.setStyleSheet(
-        f"QLabel {{ color: {color}; background: {color}26; border: 1px solid {color}66;"
+        f"QLabel {{ color: {color}; background: {_rgba(color, 0.15)};"
+        f" border: 1px solid {_rgba(color, 0.40)};"
         f" border-radius: 10px; padding: 2px 10px; font-weight: 700; font-size: 11px; }}"
     )
     return lb

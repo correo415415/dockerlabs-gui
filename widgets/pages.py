@@ -116,7 +116,7 @@ class _GhostComboBox(QComboBox):
 
 def ghost_combo(options: list[tuple[str, str]], min_width: int = 150, height: int = 38) -> QComboBox:
     """Crea un `_GhostComboBox` con items (data, label) y paleta acorde al tema activo."""
-    from theme import BG_HOVER, BG_MID, FG_PRIMARY
+    from theme import BG_HOVER, BG_MID, BORDER, FG_PRIMARY
     combo = _GhostComboBox()
     for data, label in options:
         combo.addItem(label, data)
@@ -140,7 +140,22 @@ def ghost_combo(options: list[tuple[str, str]], min_width: int = 150, height: in
     view_pal.setColor(QPalette.ColorRole.Highlight, hover)
     view_pal.setColor(QPalette.ColorRole.HighlightedText, fg)
     view_pal.setColor(QPalette.ColorRole.Base, mid)
+    view_pal.setColor(QPalette.ColorRole.Window, mid)
     view.setPalette(view_pal)
+    # El contenedor del popup (QComboBoxPrivateContainer) es una ventana propia: si
+    # conserva la paleta nativa aparecen franjas negras arriba/abajo (Windows).
+    container = view.parentWidget()
+    if container is not None:
+        c_pal = container.palette()
+        for role in (QPalette.ColorRole.Window, QPalette.ColorRole.Base, QPalette.ColorRole.Button):
+            c_pal.setColor(role, mid)
+        container.setPalette(c_pal)
+        container.setAutoFillBackground(True)
+        container.setStyleSheet(
+            f"QComboBoxPrivateContainer {{ background: {BG_MID}; border: 1px solid {BORDER};"
+            f" padding: 0; margin: 0; }}"
+            f"QAbstractItemView {{ background: {BG_MID}; border: 0; padding: 4px; }}"
+        )
     combo.setItemDelegate(_ComboItemDelegate(combo))
     combo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
     return combo
