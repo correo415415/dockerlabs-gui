@@ -5,8 +5,10 @@ como `QIcon` cacheado, render correcto incluso en displays HiDPI.
 """
 from __future__ import annotations
 
+import sys
 from functools import lru_cache
-from typing import Dict
+from pathlib import Path
+from typing import Dict, Optional
 
 from PyQt6.QtCore import QByteArray, Qt
 from PyQt6.QtGui import QIcon, QPainter, QPixmap
@@ -240,3 +242,44 @@ def pixmap(name: str, color: str = "#e6e8ec", size: int = 24) -> QPixmap:
 
 def available() -> list[str]:
     return list(_SVG.keys())
+
+
+# ---------------------------------------------------------------------------
+# Logo de la aplicación (assets/logo.png, generado con packaging/make_logo.py)
+# ---------------------------------------------------------------------------
+
+def _assets_dir() -> Path:
+    """Directorio `assets/` tanto en desarrollo como empaquetado con PyInstaller."""
+    base = getattr(sys, "_MEIPASS", None)
+    if base:
+        return Path(base) / "assets"
+    return Path(__file__).resolve().parent.parent / "assets"
+
+
+def app_logo_path() -> Optional[Path]:
+    p = _assets_dir() / "logo.png"
+    return p if p.is_file() else None
+
+
+@lru_cache(maxsize=1)
+def app_icon() -> QIcon:
+    """Icono de la app (orca de DockerLabs + «GUI»). Si falta el PNG, cae al SVG."""
+    path = app_logo_path()
+    if path is not None:
+        ic = QIcon(str(path))
+        if not ic.isNull():
+            return ic
+    return icon("machines", "#22d3ee", 64)
+
+
+@lru_cache(maxsize=8)
+def app_logo_pixmap(size: int) -> QPixmap:
+    """Logo escalado (suave) a `size` px; vacío si no hay PNG."""
+    path = app_logo_path()
+    if path is None:
+        return QPixmap()
+    pix = QPixmap(str(path))
+    if pix.isNull():
+        return pix
+    return pix.scaled(size, size, Qt.AspectRatioMode.KeepAspectRatio,
+                      Qt.TransformationMode.SmoothTransformation)

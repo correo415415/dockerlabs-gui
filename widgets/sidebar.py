@@ -36,6 +36,7 @@ from PyQt6.QtWidgets import (
 
 from theme import ACCENT, FG_PRIMARY, FG_SECONDARY
 from widgets.avatar import AvatarCircle
+from widgets.icons import app_logo_pixmap
 from widgets.icons import icon as svg_icon
 
 
@@ -128,12 +129,21 @@ class Sidebar(QFrame):
         h.addWidget(self.hamburger)
 
         self.brand_wrap = QFrame()
-        brand_box = QVBoxLayout(self.brand_wrap)
+        brand_box = QHBoxLayout(self.brand_wrap)
         brand_box.setContentsMargins(0, 0, 0, 0)
-        brand_box.setSpacing(0)
+        brand_box.setSpacing(8)
+        self.brand_logo = QLabel()
+        self.brand_logo.setObjectName("brandLogo")
+        logo_pix = app_logo_pixmap(30)
+        if not logo_pix.isNull():
+            self.brand_logo.setPixmap(logo_pix)
+            self.brand_logo.setFixedSize(30, 30)
+            brand_box.addWidget(self.brand_logo, 0, Qt.AlignmentFlag.AlignVCenter)
+        else:
+            self.brand_logo.hide()
         self.brand = QLabel("DockerLabs GUI")
         self.brand.setObjectName("brand")
-        brand_box.addWidget(self.brand)
+        brand_box.addWidget(self.brand, 1, Qt.AlignmentFlag.AlignVCenter)
         h.addWidget(self.brand_wrap, 1)
         self._brand_opacity = _wrap_with_opacity(self.brand_wrap)
         outer.addWidget(header)

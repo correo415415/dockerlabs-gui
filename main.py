@@ -38,7 +38,7 @@ from notifier import notify_os, os_backend_available
 from session_controller import SessionController
 from settings_store import SettingsStore, UserSettings
 from theme import DEFAULT_THEME, THEMES, apply_theme
-from widgets.icons import icon as svg_icon
+from widgets.icons import app_icon
 from widgets.lab_page import LabPage
 from widgets.pages import (
     AboutPage,
@@ -89,7 +89,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("DockerLabs GUI")
         self.resize(1180, 760); self.setMinimumSize(960, 620)
-        self.setWindowIcon(svg_icon("machines", _theme.ACCENT, 64))
+        self.setWindowIcon(app_icon())
 
         self.settings_store = SettingsStore(SETTINGS_FILE)
         self.settings: UserSettings = self.settings_store.load()
@@ -765,7 +765,6 @@ class MainWindow(QMainWindow):
         qss = apply_theme(theme)
         if app is not None:
             app.setStyleSheet(qss)
-        self.setWindowIcon(svg_icon("machines", _theme.ACCENT, 64))
         res = QMessageBox.question(
             self, "Tema cambiado",
             "El tema se aplica por completo al reiniciar la aplicación.\n"
@@ -855,6 +854,8 @@ def main() -> int:
                 platform.system(), platform.release(), platform.python_version())
     app = QApplication(sys.argv)
     app.setApplicationName("DockerLabs GUI")
+    app.setDesktopFileName("dockerlabs-gui")
+    app.setWindowIcon(app_icon())
     app.setStyleSheet(apply_theme(_load_theme_pref()))
     win = MainWindow()
     install_excepthook(lambda: win)
