@@ -32,12 +32,14 @@ import theme as _theme
 from app_logging import install_excepthook, setup_logging
 from catalog_controller import CatalogController
 from download_manager import DownloadManager
+from i18n import set_language, tr
 from lab_controller import LabController
+from media_cache import MediaCache
 from notifier import notify_os, os_backend_available
 from session_controller import SessionController
-from settings_store import SettingsStore, UserSettings
+from settings_store import LANGUAGES, SettingsStore, UserSettings
 from theme import DEFAULT_THEME, THEMES, apply_theme
-from widgets.icons import icon as svg_icon
+from widgets.icons import app_icon
 from widgets.lab_page import LabPage
 from widgets.pages import (
     AboutPage,
@@ -64,6 +66,7 @@ LABS_DIR = APP_DIR / "labs"
 SETTINGS_FILE = APP_DIR / "settings.json"
 ENV_FILE = APP_DIR / ".env"
 COMPLETED_FILE = APP_DIR / "completed.json"
+CACHE_DIR = APP_DIR / "cache"          # imágenes y valoraciones de máquinas
 
 
 # -----------------------------------------------------------------------------
@@ -78,6 +81,14 @@ def _load_theme_pref() -> str:
         return DEFAULT_THEME
 
 
+def _load_language_pref() -> str:
+    """Preferencia de idioma (`auto|es|en`) antes de construir cualquier widget."""
+    try:
+        return SettingsStore(SETTINGS_FILE).load().language or "auto"
+    except Exception:  # noqa: BLE001
+        return "auto"
+
+
 # -----------------------------------------------------------------------------
 # Main window
 # -----------------------------------------------------------------------------
@@ -87,7 +98,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("DockerLabs GUI")
         self.resize(1180, 760); self.setMinimumSize(960, 620)
-        self.setWindowIcon(svg_icon("machines", _theme.ACCENT, 64))
+        self.setWindowIcon(app_icon())
 
         self.settings_store = SettingsStore(SETTINGS_FILE)
         self.settings: UserSettings = self.settings_store.load()
@@ -151,7 +162,8 @@ class MainWindow(QMainWindow):
         self.catalogs.catalog_changed.connect(self._apply_catalog)
         self.catalogs.loading.connect(self._on_catalog_loading)
         self.catalogs.refresh_failed.connect(self._on_catalog_refresh_failed)
-        self.page_machines = MachinesPage(client=self.session.client)
+        self.media_cache = MediaCache(CACHE_DIR)
+        self.page_machines = MachinesPage(client=self.session.client, media_cache=self.media_cache)
         self.page_downloads = DownloadsPage()
         self.page_lab = LabPage()
         self.page_completed = CompletedPage()
@@ -188,6 +200,7 @@ class MainWindow(QMainWindow):
         self.page_lab.request_go_machines.connect(lambda: self._go("machines"))
         self.page_lab.request_grant_access.connect(self._grant_docker_access)
         self.page_lab.request_start_service.connect(self._start_docker_service)
+        self.page_lab.request_forget_sudo.connect(self._forget_sudo)
         self.page_settings.request_set_docker_network.connect(self._set_docker_network)
         self.page_session.request_login.connect(self.session.login)
         self.page_session.request_logout.connect(self.session.logout)
@@ -200,6 +213,7 @@ class MainWindow(QMainWindow):
         self.page_settings.request_open_downloads_dir.connect(self._open_downloads_dir)
         self.page_settings.request_set_max_concurrent.connect(self._set_max_concurrent)
         self.page_settings.request_set_theme.connect(self._set_theme)
+        self.page_settings.request_set_language.connect(self._set_language)
 
         self.setCentralWidget(root)
         # No usamos QStatusBar: la barra inferior se sustituye por toasts.
@@ -292,9 +306,9 @@ class MainWindow(QMainWindow):
     def _on_catalog_refresh_failed(self, err: str, has_cache: bool) -> None:
         if not has_cache:
             self.page_machines.set_catalog(None)
-            self.notify("Sin catálogo", f"Sin internet y sin caché: {err}", kind="warning")
+            self.notify(tr("Sin catálogo"), tr("Sin internet y sin caché: {err}").format(err=err), kind="warning")
         else:
-            self.notify("Sin conexión", "Usando el catálogo cacheado", kind="info")
+            self.notify(tr("Sin conexión"), tr("Usando el catálogo cacheado"), kind="info")
 
     # ---- Sesión (la lógica vive en SessionController; aquí sólo se pinta) ----
 
@@ -303,7 +317,7 @@ class MainWindow(QMainWindow):
         # emitimos directamente con el ToastManager para saltarnos los
         # ajustes de notificaciones.
         try:
-            self.toasts.show("Autenticando…", f"Conectando como {user}", kind="info")
+            self.toasts.show(tr("Autenticando…"), tr("Conectando como {user}").format(user=user), kind="info")
         except Exception:  # noqa: BLE001
             logger.exception("toast autenticando")
 
@@ -349,14 +363,14 @@ class MainWindow(QMainWindow):
 
     def _start_download(self, name: str, url: str) -> None:
         if not url:
-            self.notify("Sin enlace de descarga",
-                        f"{name} no tiene enlace de descarga en el catálogo.", kind="warning")
+            self.notify(tr("Sin enlace de descarga"),
+                        tr("{name} no tiene enlace de descarga en el catálogo.").format(name=name), kind="warning")
             return
         # Si ya esta en disco, no relanzar la descarga: abrir la carpeta.
         existing = self.downloads.downloaded_paths().get(name)
         if existing and existing.exists():
-            self.notify("Ya descargada",
-                        f"{name} ya está en {existing.parent}.", kind="info")
+            self.notify(tr("Ya descargada"),
+                        tr("{name} ya está en {path}.").format(name=name, path=existing.parent), kind="info")
             self._open_in_explorer(existing)
             return
         ok = self.downloads.start(name, url)
@@ -365,22 +379,22 @@ class MainWindow(QMainWindow):
             # descargada (red de seguridad).
             existing = self.downloads.downloaded_paths().get(name)
             if existing and existing.exists():
-                self.notify("Ya descargada",
-                            f"{name} ya está en {existing.parent}.", kind="info")
+                self.notify(tr("Ya descargada"),
+                            tr("{name} ya está en {path}.").format(name=name, path=existing.parent), kind="info")
                 self._open_in_explorer(existing)
             else:
-                self.notify("Descarga en curso",
-                            f"Ya hay una descarga activa para {name}.", kind="info")
+                self.notify(tr("Descarga en curso"),
+                            tr("Ya hay una descarga activa para {name}.").format(name=name), kind="info")
             self._refresh_downloaded_state()
             return
         self._refresh_downloaded_state()
-        self.statusBar().showMessage(f"Descargando {name}…")
-        self.notify("Descarga iniciada", name, kind="info")
+        self.statusBar().showMessage(tr("Descargando {name}…").format(name=name))
+        self.notify(tr("Descarga iniciada"), name, kind="info")
         self._go("downloads")
 
     def _cancel_download(self, name: str) -> None:
         self.downloads.cancel(name)
-        self.statusBar().showMessage(f"Cancelando descarga de {name}…")
+        self.statusBar().showMessage(tr("Cancelando descarga de {name}…").format(name=name))
 
     def _remove_download(self, name: str) -> None:
         self.downloads.remove(name, also_delete_file=False)
@@ -403,8 +417,8 @@ class MainWindow(QMainWindow):
         if target is None or not target.exists():
             # Último recurso: abrir la carpeta de descargas tal cual
             self._open_in_explorer(self.downloads.dest_dir)
-            self.notify("Archivo no encontrado",
-                        f"No se encontró el .zip de {name} en disco.",
+            self.notify(tr("Archivo no encontrado"),
+                        tr("No se encontró el .zip de {name} en disco.").format(name=name),
                         kind="warning")
             return
         self._open_in_explorer(target)
@@ -513,11 +527,11 @@ class MainWindow(QMainWindow):
         self._refresh_downloaded_state()
 
     def _on_dm_completed(self, machine: str, final_path: str) -> None:
-        self.statusBar().showMessage(f"Descarga terminada: {machine}")
+        self.statusBar().showMessage(tr("Descarga terminada: {machine}").format(machine=machine))
         # Toast clicable: al pulsar abre la carpeta donde está el .zip.
         self.notify(
-            "Descarga terminada",
-            f"{machine}  ·  Pulsa para abrir la carpeta",
+            tr("Descarga terminada"),
+            tr("{machine}  ·  Pulsa para abrir la carpeta").format(machine=machine),
             kind="success",
             on_click=lambda path=final_path: self._open_path(path),
             payload=final_path,
@@ -527,12 +541,12 @@ class MainWindow(QMainWindow):
     def _on_dm_failed(self, machine: str, kind: str, error_msg: str) -> None:
         """Una descarga ha fallado (tras los reintentos internos)."""
         titles = {
-            "not_found": "Máquina no disponible",
-            "unsupported": "Enlace no soportado",
-            "integrity": "Archivo corrupto",
-            "server": "Servidor de DockerLabs no responde",
+            "not_found": tr("Máquina no disponible"),
+            "unsupported": tr("Enlace no soportado"),
+            "integrity": tr("Archivo corrupto"),
+            "server": tr("Servidor de DockerLabs no responde"),
         }
-        title = titles.get(kind, "Error de descarga")
+        title = titles.get(kind, tr("Error de descarga"))
         first_line = (error_msg or "").splitlines()[0] if error_msg else ""
         self.statusBar().showMessage(f"{title}: {machine}")
         self.notify(title, f"{machine}: {first_line}", kind="error")
@@ -601,28 +615,57 @@ class MainWindow(QMainWindow):
     # ---- Permisos de Docker (Linux: pkexec / sudo -A) ----
 
     def _grant_docker_access(self) -> None:
+        """Abre el diálogo con las opciones (solo esta sesión / grupo docker; ambas con el
+        diálogo de autenticación del sistema; fallback sudo con contraseña si no hay pkexec)."""
         info = self.labs.docker_info
         if not info.needs_elevation:
-            self.notify("No hace falta", "Tu usuario ya puede usar Docker.", kind="info")
+            self.notify(tr("No hace falta"), tr("Tu usuario ya puede usar Docker."), kind="info")
             return
-        if not self.labs.grant_access():
-            self.notify("Ya hay una autorización en curso", kind="info")
+        if self.labs.elevating:
+            self.notify(tr("Ya hay una autorización en curso"), kind="info")
+            return
+        if not (info.can_sudo or info.can_elevate):
+            self.notify(tr("Sin permiso para usar Docker"),
+                        tr("Ejecuta como administrador: usermod -aG docker $USER (y reinicia sesión)"),
+                        kind="error")
+            return
+        from widgets.docker_access_dialog import (
+            CHOICE_GROUP,
+            CHOICE_SUDO,
+            CHOICE_TEMP,
+            ask_docker_access,
+        )
+        choice, password = ask_docker_access(self, can_sudo=info.can_sudo,
+                                             can_elevate=info.can_elevate, error=info.error)
+        actions = {
+            CHOICE_TEMP: lambda: self.labs.grant_temp_access(),
+            CHOICE_GROUP: lambda: self.labs.grant_access(),
+            CHOICE_SUDO: lambda: self.labs.use_sudo(password),
+        }
+        act = actions.get(choice)
+        if act is not None and not act():
+            self.notify(tr("Ya hay una autorización en curso"), kind="info")
+
+    def _forget_sudo(self) -> None:
+        self.labs.forget_sudo()
+        self.notify(tr("sudo desactivado"), tr("Docker volverá a ejecutarse con tu usuario."), kind="info")
 
     def _start_docker_service(self) -> None:
         if not self.labs.start_service():
-            self.notify("Ya hay una autorización en curso", kind="info")
+            self.notify(tr("Ya hay una autorización en curso"), kind="info")
 
     def _on_elevation_started(self, action: str) -> None:
         self.page_lab.set_elevating(True)
 
     def _on_elevation_done(self, action: str, ok: bool, detail: str) -> None:
         self.page_lab.set_elevating(False)
-        titles = {"grant": "Acceso a Docker", "start_service": "Servicio Docker"}
+        titles = {"grant": tr("Acceso a Docker"), "temp": tr("Acceso a Docker (esta sesión)"),
+                  "start_service": tr("Servicio Docker"), "sudo": tr("Docker con sudo")}
         title = titles.get(action, action)
         if ok:
-            self.notify(title, detail.splitlines()[0] if detail else "Hecho", kind="success")
+            self.notify(title, detail.splitlines()[0] if detail else tr("Hecho"), kind="success")
         else:
-            self.notify(f"{title}: no se pudo", detail.splitlines()[0] if detail else "",
+            self.notify(tr("{title}: no se pudo").format(title=title), detail.splitlines()[0] if detail else "",
                         kind="warning" if "cancelad" in detail.lower() else "error")
 
     def _on_labs_list(self) -> None:
@@ -639,51 +682,39 @@ class MainWindow(QMainWindow):
     def _launch_lab(self, name: str) -> None:
         info = self.labs.docker_info
         if not info.available:
-            self.notify("Docker no está instalado", self.labs.install_hint().splitlines()[0],
+            self.notify(tr("Docker no está instalado"), self.labs.install_hint().splitlines()[0],
                         kind="error")
             self._go("lab")
             return
         if info.needs_elevation:
             self._go("lab")
-            if info.can_elevate:
-                res = QMessageBox.question(
-                    self, "Permiso para usar Docker",
-                    "Tu usuario no puede usar Docker sin sudo.\n\n"
-                    "¿Conceder acceso ahora? Se abrirá el diálogo de autenticación del sistema "
-                    "y se añadirá tu usuario al grupo docker.",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                )
-                if res == QMessageBox.StandardButton.Yes:
-                    self._grant_docker_access()
-            else:
-                self.notify("Sin permiso para usar Docker",
-                            "Ejecuta: sudo usermod -aG docker $USER (y reinicia sesión)",
-                            kind="error")
+            # Diálogo con las dos opciones (sudo recomendado / grupo docker)
+            self._grant_docker_access()
             return
         if not info.running:
-            self.notify("Docker no responde", (info.error or "").splitlines()[0], kind="error")
+            self.notify(tr("Docker no responde"), (info.error or "").splitlines()[0], kind="error")
             self._go("lab")
             return
         zip_path = self.downloads.downloaded_paths().get(name)
         if zip_path is None:
-            self.notify("Primero descarga la máquina",
-                        f"{name} no está en la carpeta de descargas.", kind="warning")
+            self.notify(tr("Primero descarga la máquina"),
+                        tr("{name} no está en la carpeta de descargas.").format(name=name), kind="warning")
             return
         if not self.labs.launch(name, zip_path):
-            self.notify("Ya en marcha", f"{name} ya se está desplegando.", kind="info")
+            self.notify(tr("Ya en marcha"), tr("{name} ya se está desplegando.").format(name=name), kind="info")
             return
-        self.notify("Desplegando laboratorio", name, kind="info")
+        self.notify(tr("Desplegando laboratorio"), name, kind="info")
         self._go("lab")
 
     def _lab_action(self, machine: str, action: str) -> None:
         if action == "copy_ip":
-            self.notify("IP copiada", "La IP de la máquina está en el portapapeles.", kind="success")
+            self.notify(tr("IP copiada"), tr("La IP de la máquina está en el portapapeles."), kind="success")
         elif action == "shell":
             if not self.labs.open_shell(machine):
                 st = self.labs.lab(machine)
                 cmd = " ".join(self.labs.client.exec_shell_command(st.container_name)) if st else ""
-                self.notify("No se pudo abrir la terminal",
-                            f"Ejecuta manualmente: {cmd}", kind="warning")
+                self.notify(tr("No se pudo abrir la terminal"),
+                            tr("Ejecuta manualmente: {cmd}").format(cmd=cmd), kind="warning")
         elif action == "start":
             self.labs.start(machine)
         elif action == "stop":
@@ -694,25 +725,25 @@ class MainWindow(QMainWindow):
             self.labs.cancel_launch(machine)
         elif action == "remove":
             res = QMessageBox.question(
-                self, "Eliminar laboratorio",
-                f"¿Eliminar el contenedor y la imagen Docker de «{machine}»?\n"
-                "El .zip descargado se conserva; podrás volver a lanzarla.",
+                self, tr("Eliminar laboratorio"),
+                tr("¿Eliminar el contenedor y la imagen Docker de «{machine}»?\n"
+                   "El .zip descargado se conserva; podrás volver a lanzarla.").format(machine=machine),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             )
             if res == QMessageBox.StandardButton.Yes:
                 self.labs.remove(machine, remove_image=True)
 
     def _on_lab_started(self, machine: str, access_text: str) -> None:
-        self.notify("Laboratorio en marcha", f"{machine}\n{access_text}", kind="success",
+        self.notify(tr("Laboratorio en marcha"), f"{machine}\n{access_text}", kind="success",
                     on_click=lambda _p: self._go("lab"), payload=machine)
 
     def _on_lab_failed(self, machine: str, error: str) -> None:
-        self.notify(f"Error en {machine}", error.splitlines()[0] if error else "", kind="error")
+        self.notify(tr("Error en {machine}").format(machine=machine), error.splitlines()[0] if error else "", kind="error")
 
     def _on_lab_action_done(self, machine: str, action: str) -> None:
-        verbs = {"stop": "detenida", "start": "iniciada", "restart": "reiniciada",
-                 "remove": "eliminada"}
-        self.notify(f"{machine} {verbs.get(action, action)}", kind="info")
+        verbs = {"stop": tr("{machine} detenida"), "start": tr("{machine} iniciada"),
+                 "restart": tr("{machine} reiniciada"), "remove": tr("{machine} eliminada")}
+        self.notify(verbs.get(action, "{machine} " + action).format(machine=machine), kind="info")
 
     def _set_docker_network(self, mode: str) -> None:
         self.settings.docker_network = mode or "auto"
@@ -730,6 +761,7 @@ class MainWindow(QMainWindow):
             docker_network=self.settings.docker_network,
             max_concurrent=self.settings.max_concurrent_downloads,
             theme=self.settings.theme,
+            language=self.settings.language,
         )
 
     def _set_theme(self, theme: str) -> None:
@@ -744,11 +776,30 @@ class MainWindow(QMainWindow):
         qss = apply_theme(theme)
         if app is not None:
             app.setStyleSheet(qss)
-        self.setWindowIcon(svg_icon("machines", _theme.ACCENT, 64))
+        self._offer_restart(
+            tr("Tema cambiado"),
+            tr("El tema se aplica por completo al reiniciar la aplicación.\n"
+               "¿Reiniciar ahora? (las descargas en curso se cancelarán)"),
+            tr("Tema guardado"),
+        )
+
+    def _set_language(self, language: str) -> None:
+        language = language if language in LANGUAGES else "auto"
+        if language == self.settings.language:
+            return
+        self.settings.language = language
+        self.settings_store.save(self.settings)
+        # Los widgets ya construidos no se retraducen: hace falta reiniciar.
+        self._offer_restart(
+            tr("Idioma cambiado"),
+            tr("El idioma se aplica al reiniciar la aplicación.\n"
+               "¿Reiniciar ahora? (las descargas en curso se cancelarán)"),
+            tr("Idioma guardado"),
+        )
+
+    def _offer_restart(self, title: str, question: str, saved_title: str) -> None:
         res = QMessageBox.question(
-            self, "Tema cambiado",
-            "El tema se aplica por completo al reiniciar la aplicación.\n"
-            "¿Reiniciar ahora? (las descargas en curso se cancelarán)",
+            self, title, question,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.Yes,
         )
@@ -756,7 +807,7 @@ class MainWindow(QMainWindow):
             self._restart_requested = True
             self.close()
         else:
-            self.notify("Tema guardado", "Se aplicará del todo la próxima vez que abras la app.", kind="info")
+            self.notify(saved_title, tr("Se aplicará del todo la próxima vez que abras la app."), kind="info")
 
     def _set_max_concurrent(self, n: int) -> None:
         self.settings.max_concurrent_downloads = max(1, min(6, int(n)))
@@ -770,25 +821,25 @@ class MainWindow(QMainWindow):
             self.settings_store.save(self.settings)
             self._refresh_settings_page()
             self._refresh_downloaded_state()
-            self.notify("Carpeta de descargas",
-                        f"Nueva ubicación: {self.downloads.dest_dir}", kind="success")
+            self.notify(tr("Carpeta de descargas"),
+                        tr("Nueva ubicación: {path}").format(path=self.downloads.dest_dir), kind="success")
         except Exception as exc:  # noqa: BLE001
-            self.notify("Error", f"No se pudo cambiar la carpeta: {exc}", kind="error")
+            self.notify(tr("Error"), tr("No se pudo cambiar la carpeta: {error}").format(error=exc), kind="error")
 
     def _set_os_notifications(self, enabled: bool) -> None:
         self.settings.os_notifications = bool(enabled) and self._os_backend
         self.settings_store.save(self.settings)
         if enabled and self._os_backend:
-            self.notify("Notificaciones del SO activas",
-                        "Verás los avisos también en el buzón del sistema.",
+            self.notify(tr("Notificaciones del SO activas"),
+                        tr("Verás los avisos también en el buzón del sistema."),
                         kind="success")
 
     def _set_in_app_notifications(self, enabled: bool) -> None:
         self.settings.in_app_notifications = bool(enabled)
         self.settings_store.save(self.settings)
         if enabled:
-            self.toasts.show("Notificaciones in-app activas",
-                             "Las verás aquí, en la esquina inferior.",
+            self.toasts.show(tr("Notificaciones in-app activas"),
+                             tr("Las verás aquí, en la esquina inferior."),
                              kind="info")
 
     # ---- Totales ----
@@ -803,9 +854,9 @@ class MainWindow(QMainWindow):
         if running:
             names = ", ".join(s.machine for s in running)
             res = QMessageBox.question(
-                self, "Laboratorios en ejecución",
-                f"Hay {len(running)} laboratorio(s) en marcha: {names}.\n\n"
-                "¿Quieres detenerlos antes de salir?",
+                self, tr("Laboratorios en ejecución"),
+                tr("Hay {n} laboratorio(s) en marcha: {names}.\n\n"
+                   "¿Quieres detenerlos antes de salir?").format(n=len(running), names=names),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
                 | QMessageBox.StandardButton.Cancel,
             )
@@ -834,6 +885,9 @@ def main() -> int:
                 platform.system(), platform.release(), platform.python_version())
     app = QApplication(sys.argv)
     app.setApplicationName("DockerLabs GUI")
+    app.setDesktopFileName("dockerlabs-gui")
+    app.setWindowIcon(app_icon())
+    set_language(_load_language_pref())
     app.setStyleSheet(apply_theme(_load_theme_pref()))
     win = MainWindow()
     install_excepthook(lambda: win)

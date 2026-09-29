@@ -15,16 +15,31 @@ from PyQt6.QtCore import (
     QSize,
     QSortFilterProxyModel,
     Qt,
+    pyqtSignal,
 )
 from PyQt6.QtGui import QColor, QFont, QPainter, QPen
 from PyQt6.QtWidgets import QStyledItemDelegate, QStyleOptionViewItem
 
 from catalog import Machine, difficulty_rank
+from i18n import tr
 from theme import ACCENT, FG_MUTED, FG_PRIMARY, SUCCESS, WARNING, difficulty_color
 from widgets.icons import icon as svg_icon
 
 COL_DONE, COL_STATE, COL_NAME, COL_DIFF, COL_AUTHOR, COL_DATE = range(6)
 HEADERS = ["", "", "Nombre", "Dificultad", "Autor", "Fecha"]
+# Claves de traducción de las cabeceras (se traducen al mostrarlas en headerData)
+_HEADER_TR = (tr("Nombre"), tr("Dificultad"), tr("Autor"), tr("Fecha"))  # noqa: F841
+# Las dos primeras columnas son estrechas (solo icono); en la cabecera se muestra un
+# icono + tooltip para que se sepa qué representan.
+HEADER_ICONS = {COL_DONE: "check", COL_STATE: "download"}
+HEADER_TOOLTIPS = {
+    COL_DONE: tr("Completada — marcada como resuelta en tu cuenta de DockerLabs"),
+    COL_STATE: tr("Estado local — descargada, descargando o laboratorio en ejecución"),
+    COL_NAME: tr("Nombre de la máquina"),
+    COL_DIFF: tr("Dificultad según DockerLabs"),
+    COL_AUTHOR: tr("Autor de la máquina"),
+    COL_DATE: tr("Fecha de publicación"),
+}
 
 ROLE_MACHINE = Qt.ItemDataRole.UserRole + 1
 ROLE_SORT = Qt.ItemDataRole.UserRole + 2
@@ -33,6 +48,13 @@ ROLE_DONE = Qt.ItemDataRole.UserRole + 4
 
 
 class MachineTableModel(QAbstractTableModel):
+    # Se emite cuando cambia alguno de los conjuntos de estado (completadas,
+    # descargando, descargadas, en ejecución). `dataChanged` repinta las celdas,
+    # pero el proxy no re-evalúa el *filtro* ni el *orden* con él: sin esta señal,
+    # con el filtro «Descargadas» activo una máquina recién bajada no aparecía
+    # hasta tocar el buscador.
+    states_changed = pyqtSignal()
+
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._rows: List[Machine] = []
@@ -71,9 +93,10 @@ class MachineTableModel(QAbstractTableModel):
             return
         if len(rows) > 40:   # muchos cambios: un solo dataChanged de rango
             self.dataChanged.emit(self.index(rows[0], 0), self.index(rows[-1], COL_DATE))
-            return
-        for r in rows:
-            self.dataChanged.emit(self.index(r, 0), self.index(r, COL_DATE))
+        else:
+            for r in rows:
+                self.dataChanged.emit(self.index(r, 0), self.index(r, COL_DATE))
+        self.states_changed.emit()
 
     def set_completed(self, names) -> None:
         self._set_names("completed", names)
@@ -104,8 +127,14 @@ class MachineTableModel(QAbstractTableModel):
         return 0 if parent.isValid() else len(HEADERS)
 
     def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):  # noqa: N802
-        if orientation == Qt.Orientation.Horizontal and role == Qt.ItemDataRole.DisplayRole:
-            return HEADERS[section]
+        if orientation != Qt.Orientation.Horizontal or not (0 <= section < len(HEADERS)):
+            return None
+        if role == Qt.ItemDataRole.DisplayRole:
+            return tr(HEADERS[section]) if HEADERS[section] else ""
+        if role == Qt.ItemDataRole.ToolTipRole:
+            return HEADER_TOOLTIPS.get(section)
+        if role == Qt.ItemDataRole.DecorationRole and section in HEADER_ICONS:
+            return svg_icon(HEADER_ICONS[section], FG_MUTED, 14)
         return None
 
     def data(self, index: QModelIndex, role=Qt.ItemDataRole.DisplayRole):
@@ -155,10 +184,10 @@ class MachineTableModel(QAbstractTableModel):
                     return svg_icon("folder", SUCCESS, 16)
         if role == Qt.ItemDataRole.ToolTipRole:
             if col == COL_DONE:
-                return "Completada" if m.name in self.completed else ""
+                return tr("Completada") if m.name in self.completed else ""
             if col == COL_STATE:
-                return {"running": "Laboratorio en ejecución", "downloading": "Descargando…",
-                        "downloaded": "Descargada en local"}.get(self.state_of(m.name), "")
+                return {"running": tr("Laboratorio en ejecución"), "downloading": tr("Descargando…"),
+                        "downloaded": tr("Descargada en local")}.get(self.state_of(m.name), "")
             if col == COL_NAME and m.description:
                 return m.description
             if col == COL_AUTHOR:
@@ -187,6 +216,24 @@ class MachineFilterProxy(QSortFilterProxyModel):
         self.state = "Todas"   # Todas | Completadas | Pendientes | Descargadas | En ejecución
         self.setSortRole(ROLE_SORT)
         self.setDynamicSortFilter(True)
+
+    def setSourceModel(self, model) -> None:  # noqa: N802
+        old = self.sourceModel()
+        if isinstance(old, MachineTableModel):
+            try:
+                old.states_changed.disconnect(self._on_states_changed)
+            except (TypeError, RuntimeError):
+                pass
+        super().setSourceModel(model)
+        if isinstance(model, MachineTableModel):
+            model.states_changed.connect(self._on_states_changed)
+
+    def _on_states_changed(self) -> None:
+        # Re-filtrar (y re-ordenar si se ordena por estado) sin reconstruir la tabla.
+        if self.state != "Todas":
+            self.invalidateFilter()
+        elif self.sortColumn() in (COL_DONE, COL_STATE):
+            self.invalidate()
 
     def set_query(self, q: str) -> None:
         self.query = (q or "").strip()

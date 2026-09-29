@@ -107,12 +107,14 @@ class DockerInfo:
     is_root: bool = False             # la app se ejecuta como root (sudo)
     socket_path: str = ""             # ruta del socket unix (si aplica)
     can_elevate: bool = False         # hay un mecanismo gráfico para pedir privilegios
+    can_sudo: bool = False            # existe `sudo` (fallback: contraseña en la app si no hay pkexec)
+    via_sudo: bool = False            # el cliente ejecuta docker con sudo (contraseña en memoria)
     service_state: str = ""           # systemd: active | inactive | failed | missing | ''
 
     @property
     def needs_elevation(self) -> bool:
-        """True si Docker está instalado pero falta permiso y no somos root."""
-        return self.available and self.permission_denied and not self.is_root
+        """True si Docker está instalado pero falta permiso y no somos root (ni usamos sudo)."""
+        return self.available and self.permission_denied and not self.is_root and not self.via_sudo
 
     @property
     def bridge_ip_reachable(self) -> bool:
@@ -550,6 +552,52 @@ def elevation_available() -> bool:
     return bool(elevation_command())
 
 
+def sudo_available() -> bool:
+    return platform.system() == "Linux" and shutil.which("sudo") is not None
+
+
+def sudo_prefix(password: bool = True) -> List[str]:
+    """Prefijo para ejecutar un comando con sudo leyendo la contraseña por stdin.
+
+    `-S` lee la contraseña de stdin, `-p ''` no imprime prompt, `-k` ignora la
+    caché de credenciales para que *siempre* consuma la contraseña de stdin (si
+    no, con la caché activa sudo no leería stdin y se la pasaría a docker).
+    Con `password=False` (terminal interactiva) se deja que sudo pregunte.
+    """
+    sudo = shutil.which("sudo") or "sudo"
+    return [sudo, "-S", "-k", "-p", ""] if password else [sudo]
+
+
+def verify_sudo_password(password: str,
+                         runner: Optional[Callable[..., subprocess.CompletedProcess]] = None,
+                         timeout: float = 20) -> Tuple[bool, str]:
+    """Comprueba la contraseña de sudo sin ejecutar nada (`sudo -v`)."""
+    if platform.system() != "Linux":
+        return False, "sudo solo está soportado en Linux."
+    if not shutil.which("sudo"):
+        return False, "No se encontró `sudo` en el sistema."
+    if not password:
+        return False, "Introduce tu contraseña."
+    run = runner or (lambda c, timeout=timeout, input_data=None: subprocess.run(
+        list(c), capture_output=True, timeout=timeout, input=input_data))
+    try:
+        cp = run([*sudo_prefix(), "-v"], timeout=timeout,
+                 input_data=(password + "\n").encode("utf-8"))
+    except subprocess.TimeoutExpired:
+        return False, "sudo no respondió (¿requiere terminal? revisa `requiretty` en sudoers)."
+    except OSError as exc:
+        return False, f"No se pudo ejecutar sudo: {exc}"
+    if cp.returncode == 0:
+        return True, "Contraseña correcta."
+    err = (cp.stderr or b"").decode("utf-8", "replace").strip()
+    low = err.lower()
+    if "not in the sudoers" in low or "no está en el archivo sudoers" in low:
+        return False, "Tu usuario no puede usar sudo (no está en sudoers). Usa la opción del grupo docker."
+    if "incorrect password" in low or "sorry" in low or "contraseña incorrecta" in low or not err:
+        return False, "Contraseña incorrecta."
+    return False, err[:300]
+
+
 GRANT_ACCESS_SCRIPT = r"""
 set -e
 USER_NAME="$1"
@@ -583,13 +631,52 @@ echo GRANT_OK
 """
 
 
-def grant_docker_access(sock: str = "", user: str = "",
-                        runner: Optional[Callable[..., subprocess.CompletedProcess]] = None,
-                        timeout: float = 180) -> Tuple[bool, str]:
-    """Pide privilegios con el diálogo nativo y concede acceso al socket.
+# Acceso *temporal*: solo ACL/chown sobre el socket, sin tocar grupos. Dura
+# hasta que el daemon recree el socket (reinicio del servicio o del equipo).
+TEMP_ACCESS_SCRIPT = r"""
+set -e
+USER_NAME="$1"
+SOCK="$2"
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl is-active --quiet docker || systemctl start docker || true
+elif command -v service >/dev/null 2>&1; then
+  service docker start >/dev/null 2>&1 || true
+fi
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  [ -S "$SOCK" ] && break
+  sleep 1
+done
+if [ ! -S "$SOCK" ]; then
+  echo "No se encontró el socket $SOCK (¿está instalado y arrancado Docker?)" >&2
+  exit 3
+fi
+if command -v setfacl >/dev/null 2>&1; then
+  setfacl -m "u:${USER_NAME}:rw" "$SOCK"
+else
+  chown "$USER_NAME" "$SOCK"
+fi
+echo TEMP_OK
+"""
 
-    Añade al usuario al grupo `docker`, arranca el servicio y aplica una ACL
-    sobre el socket para que funcione *sin cerrar sesión*. Devuelve (ok, detalle).
+
+def _current_user() -> str:
+    user = os.environ.get("SUDO_USER") or os.environ.get("USER") or ""
+    if not user:
+        try:
+            import pwd
+            user = pwd.getpwuid(os.getuid()).pw_name
+        except Exception:  # noqa: BLE001
+            user = ""
+    return user
+
+
+def _run_elevated_script(script: str, marker: str, argv0: str, sock: str, user: str,
+                         runner: Optional[Callable[..., subprocess.CompletedProcess]],
+                         timeout: float) -> Tuple[bool, str]:
+    """Ejecuta `script` como root con el diálogo nativo (pkexec / sudo -A).
+
+    Devuelve (ok, detalle). `ok` solo si el script termina con rc 0 e imprime
+    `marker`. Los errores de autorización (cancelar, no autorizado) se traducen.
     """
     if platform.system() != "Linux":
         return False, "La elevación de privilegios solo está soportada en Linux."
@@ -597,15 +684,11 @@ def grant_docker_access(sock: str = "", user: str = "",
     if not prefix:
         return False, ("No se encontró pkexec ni sudo con askpass gráfico.\n"
                        "Ejecuta a mano: sudo usermod -aG docker $USER  (y reinicia sesión).")
-    user = user or os.environ.get("SUDO_USER") or os.environ.get("USER") or ""
+    user = user or _current_user()
     if not user:
-        try:
-            import pwd
-            user = pwd.getpwuid(os.getuid()).pw_name
-        except Exception:  # noqa: BLE001
-            return False, "No se pudo determinar el usuario actual."
+        return False, "No se pudo determinar el usuario actual."
     sock = sock or docker_socket_path() or "/var/run/docker.sock"
-    cmd = [*prefix, "/bin/sh", "-c", GRANT_ACCESS_SCRIPT, "dockerlabs-grant", user, sock]
+    cmd = [*prefix, "/bin/sh", "-c", script, argv0, user, sock]
     env = dict(os.environ)
     if prefix and prefix[0].endswith("sudo") and not env.get("SUDO_ASKPASS"):
         env["SUDO_ASKPASS"] = _askpass_helper()
@@ -621,11 +704,43 @@ def grant_docker_access(sock: str = "", user: str = "",
     err = (cp.stderr or b"").decode("utf-8", "replace")
     if cp.returncode == 126 or "dismissed" in err.lower() or "not authorized" in err.lower():
         return False, "Autorización cancelada por el usuario."
-    if cp.returncode != 0 or "GRANT_OK" not in out:
+    if cp.returncode != 0 or marker not in out:
         return False, (err.strip() or out.strip() or f"Fallo al conceder acceso (rc={cp.returncode}).")[:800]
+    return True, out
+
+
+def grant_docker_access(sock: str = "", user: str = "",
+                        runner: Optional[Callable[..., subprocess.CompletedProcess]] = None,
+                        timeout: float = 180) -> Tuple[bool, str]:
+    """Pide privilegios con el diálogo nativo y concede acceso *permanente*.
+
+    Añade al usuario al grupo `docker`, arranca el servicio y aplica una ACL
+    sobre el socket para que funcione *sin cerrar sesión*. Devuelve (ok, detalle).
+    """
+    ok, detail = _run_elevated_script(GRANT_ACCESS_SCRIPT, "GRANT_OK", "dockerlabs-grant",
+                                      sock, user, runner, timeout)
+    if not ok:
+        return False, detail
     return True, ("Acceso concedido. Tu usuario ya pertenece al grupo docker; "
                   "el acceso inmediato es válido hasta que se reinicie el servicio "
                   "(tras cerrar e iniciar sesión será permanente).")
+
+
+def grant_temp_docker_access(sock: str = "", user: str = "",
+                             runner: Optional[Callable[..., subprocess.CompletedProcess]] = None,
+                             timeout: float = 180) -> Tuple[bool, str]:
+    """Pide privilegios con el diálogo nativo y concede acceso *temporal*.
+
+    Solo aplica una ACL (o chown) sobre el socket: no modifica grupos ni la
+    configuración del sistema; el permiso desaparece cuando Docker recrea el
+    socket (reinicio del servicio / del equipo). No hace falta cerrar sesión.
+    """
+    ok, detail = _run_elevated_script(TEMP_ACCESS_SCRIPT, "TEMP_OK", "dockerlabs-temp",
+                                      sock, user, runner, timeout)
+    if not ok:
+        return False, detail
+    return True, ("Acceso temporal concedido. Docker funcionará con tu usuario hasta que "
+                  "se reinicie el servicio o el equipo; no se ha modificado ningún grupo.")
 
 
 def start_docker_service(runner: Optional[Callable[..., subprocess.CompletedProcess]] = None,
@@ -669,6 +784,28 @@ class DockerClient:
         # None → autodetectar; "" → forzar "no instalado" (tests)
         self.binary = (shutil.which("docker") or "") if binary is None else binary
         self._run = runner or self._default_runner
+        # Contraseña de sudo (solo en memoria, nunca se persiste). Si está, todos
+        # los comandos docker se ejecutan como `sudo -S -k -p '' docker …`.
+        self._sudo_password: Optional[str] = None
+
+    # ---------- sudo ----------
+
+    @property
+    def use_sudo(self) -> bool:
+        return self._sudo_password is not None
+
+    def set_sudo_password(self, password: Optional[str]) -> None:
+        self._sudo_password = password if password else None
+
+    def clear_sudo(self) -> None:
+        self._sudo_password = None
+
+    def _cmd(self, *args: str) -> List[str]:
+        base = [self.binary, *args]
+        return [*sudo_prefix(), *base] if self.use_sudo else base
+
+    def _stdin(self) -> Optional[bytes]:
+        return (self._sudo_password + "\n").encode("utf-8") if self.use_sudo else None
 
     # ---------- bajo nivel ----------
 
@@ -685,7 +822,7 @@ class DockerClient:
         if not self.binary:
             raise DockerNotInstalled("Docker no está instalado o no está en el PATH.")
         try:
-            cp = self._run([self.binary, *args], timeout=timeout)
+            cp = self._run(self._cmd(*args), timeout=timeout, input_data=self._stdin())
         except subprocess.TimeoutExpired as exc:
             raise DockerNotRunning(f"`docker {args[0]}` no respondió en {timeout}s") from exc
         except FileNotFoundError as exc:
@@ -703,7 +840,8 @@ class DockerClient:
                                           or "dial unix" in low):
             raise DockerPermissionDenied(
                 "Sin permiso para hablar con el daemon de Docker.\n"
-                "Pulsa «Conceder acceso» para autorizarlo con tu contraseña, o hazlo a mano:\n"
+                "Pulsa «Permitir acceso a Docker» (usar sudo o añadirte al grupo docker), "
+                "o hazlo a mano:\n"
                 "    sudo usermod -aG docker $USER   # y vuelve a iniciar sesión"
             )
         if ("cannot connect to the docker daemon" in low
@@ -727,16 +865,18 @@ class DockerClient:
                               error="Docker no está instalado o no está en el PATH.")
         sock = docker_socket_path(self) if platform.system() == "Linux" else ""
         base = dict(available=True, running=False, is_root=root, socket_path=sock,
-                    can_elevate=elevation_available(),
+                    can_elevate=elevation_available(), can_sudo=sudo_available(),
+                    via_sudo=self.use_sudo,
                     service_state=docker_service_state() if sock else "")
         # Pre-chequeo barato: si el socket existe y no podemos ni leerlo, no hace
         # falta llamar a docker (y en algunas distros `docker version` tarda).
-        if sock and socket_access(sock) == "denied":
+        # Con sudo activo el chequeo no aplica (root sí puede).
+        if sock and not self.use_sudo and socket_access(sock) == "denied":
             return DockerInfo(
                 permission_denied=True,
                 error=("Sin permiso para usar el socket de Docker "
-                       f"({sock}). " + ("Pulsa «Conceder acceso» para autorizarlo."
-                                        if base["can_elevate"] else
+                       f"({sock}). " + ("Pulsa «Permitir acceso a Docker» para autorizarlo."
+                                        if (base["can_elevate"] or base["can_sudo"]) else
                                         "Ejecuta: sudo usermod -aG docker $USER y vuelve a iniciar sesión.")),
                 **base,
             )
@@ -788,11 +928,20 @@ class DockerClient:
         if not self.binary:
             raise DockerNotInstalled("Docker no está instalado o no está en el PATH.")
         proc = subprocess.Popen(
-            [self.binary, "load", "-i", str(tar_path)],
+            self._cmd("load", "-i", str(tar_path)),
+            stdin=subprocess.PIPE if self.use_sudo else subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
             encoding="utf-8", errors="replace", bufsize=1,
             creationflags=_CREATE_NO_WINDOW,
         )
+        if self.use_sudo and proc.stdin is not None:
+            try:
+                proc.stdin.write((self._sudo_password or "") + "\n")
+                proc.stdin.flush()
+            except OSError:
+                pass
+            finally:
+                proc.stdin.close()
         loaded = ""
         lines: List[str] = []
         assert proc.stdout is not None
@@ -954,8 +1103,10 @@ class DockerClient:
 
     def exec_shell_command(self, name: str) -> List[str]:
         """Devuelve el comando para abrir una shell interactiva en el contenedor."""
-        return [self.binary or "docker", "exec", "-it", name, "sh", "-c",
-                "command -v bash >/dev/null 2>&1 && exec bash || exec sh"]
+        cmd = [self.binary or "docker", "exec", "-it", name, "sh", "-c",
+               "command -v bash >/dev/null 2>&1 && exec bash || exec sh"]
+        # En una terminal interactiva dejamos que sudo pida la contraseña él mismo.
+        return [*sudo_prefix(password=False), *cmd] if self.use_sudo else cmd
 
     @staticmethod
     def _parse_inspect(d: dict) -> ContainerStatus:
@@ -1020,14 +1171,20 @@ def permission_hint(info: "DockerInfo") -> str:
     """Explicación corta del problema de permisos y cómo resolverlo."""
     if info.is_root:
         return "La app se ejecuta como root: no hace falta conceder permisos."
+    if info.via_sudo:
+        return "Docker se ejecuta con sudo (la contraseña solo se guarda en memoria durante esta sesión)."
     if info.can_elevate:
-        return ("Tu usuario no puede usar Docker sin sudo. Pulsa «Conceder acceso»: "
-                "se abrirá el diálogo de autenticación del sistema y se añadirá tu "
-                "usuario al grupo docker (sin necesidad de reiniciar la app).")
-    return ("Tu usuario no puede usar Docker sin sudo y no se encontró pkexec "
-            "(polkit) ni un askpass gráfico. Ejecuta en una terminal:\n"
-            "    sudo usermod -aG docker $USER\n"
-            "y vuelve a iniciar sesión, o instala policykit-1.")
+        return ("Tu usuario no puede usar Docker sin sudo. Pulsa «Permitir acceso a Docker» y elige "
+                "(con el diálogo de autenticación del sistema): acceso temporal hasta el próximo "
+                "reinicio (recomendado) o añadir tu usuario al grupo docker (permanente).")
+    if info.can_sudo:
+        return ("Tu usuario no puede usar Docker sin sudo y no hay pkexec/polkit para pedir "
+                "permiso con el diálogo del sistema. Pulsa «Permitir acceso a Docker» para "
+                "introducir tu contraseña de sudo (solo se guarda en memoria durante esta sesión).")
+    return ("Tu usuario no puede usar Docker sin sudo y no se encontró sudo ni pkexec "
+            "(polkit). Ejecuta en una terminal como administrador:\n"
+            "    usermod -aG docker $USER\n"
+            "y vuelve a iniciar sesión, o instala sudo / policykit-1.")
 
 
 def choose_network_strategy(info: DockerInfo, preferred: str = "auto") -> str:

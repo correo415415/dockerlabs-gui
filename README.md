@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/logo_256.png" width="128" alt="DockerLabs GUI"></p>
+
 # DockerLabs GUI
 
 Cliente de escritorio (PyQt6) para [DockerLabs](https://dockerlabs.es): explora el
@@ -51,15 +53,9 @@ Red según plataforma:
 ### Permisos de Docker en Linux (sin sudo)
 Al arrancar, la app comprueba si tu usuario puede usar el socket de Docker. Si no puede
 y la app **no** se ejecuta como root, en la página *Laboratorio* aparece
-**«Conceder acceso»**: se abre el **diálogo de autenticación del sistema** (`pkexec`/polkit;
-si no existe, `sudo -A` con un askpass gráfico) y se ejecuta, como root:
-
-- `usermod -aG docker <tu usuario>` (permanente tras reiniciar sesión),
-- arranque/habilitación del servicio `docker`,
-- `setfacl -m u:<tu usuario>:rw /var/run/docker.sock` para que funcione **ahora mismo**.
-
-Si el servicio está parado se ofrece **«Iniciar servicio»**. Si prefieres hacerlo a mano:
-`sudo usermod -aG docker $USER` y vuelve a iniciar sesión.
+**«Permitir acceso a Docker»** con dos opciones (solo esta sesión / grupo docker), ambas con el
+diálogo de autenticación del sistema — ver [Permisos de Docker en Linux](#permisos-de-docker-en-linux).
+Si el servicio está parado se ofrece **«Iniciar servicio»**.
 
 > **Velocidad de descarga.** El servidor oficial (`gestion-maquinas.dockerlabs.es`) limita
 > cada conexión a ~0,5 MB/s y no soporta `Range`, por lo que no es posible acelerar una
@@ -97,6 +93,7 @@ settings.json      ajustes
 .env               sesión persistente
 completed.json     completadas (caché local)
 catalog.json       catálogo cacheado (funciona sin conexión)
+cache/             imágenes y valoraciones de máquinas (caché en disco, TTL 6 h)
 downloads/         zips descargados
 labs/<máquina>/    imágenes extraídas
 logs/app.log       log rotativo (DOCKERLABS_DEBUG=1 para más detalle)
@@ -137,3 +134,21 @@ TODO.md               análisis y hoja de ruta
 
 DockerLabs es un proyecto de [El Pingüino de Mario](https://dockerlabs.es). Esta GUI es un
 cliente no oficial.
+
+### Permisos de Docker en Linux
+
+Si tu usuario no puede usar el socket de Docker, la app ofrece dos opciones al pulsar
+**«Permitir acceso a Docker»** (o al lanzar una máquina). En ambas la contraseña se pide con el
+**diálogo de autenticación del sistema** (`pkexec`/polkit, o `sudo -A` con askpass gráfico): la app
+nunca ve tu contraseña.
+
+1. **Solo esta sesión (recomendado)** — se aplica una ACL (`setfacl`) sobre el socket de Docker para
+   tu usuario. No se modifica ningún grupo ni la configuración; el permiso desaparece al reiniciar
+   el servicio o el equipo. No hace falta cerrar sesión.
+2. **Añadir mi usuario al grupo docker** — permanente. Se ejecuta `usermod -aG docker` más la misma
+   ACL sobre el socket para que funcione sin cerrar sesión. Ten en cuenta que pertenecer al grupo
+   `docker` equivale a tener root sin contraseña.
+
+Si no hay `pkexec` ni askpass gráfico pero sí `sudo`, se ofrece un *fallback*: introducir la
+contraseña en la app (se comprueba con `sudo -v`, `docker` se ejecuta con `sudo -S` y la contraseña
+solo vive en memoria; «Dejar de usar sudo» la olvida).

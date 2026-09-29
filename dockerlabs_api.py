@@ -5,7 +5,11 @@ Encapsula:
 - Login contra /api/auth/login (CSRF + cookie de sesión firmada de Flask).
 - Persistencia del 'token' (cookie de sesión + CSRF) en un .env del CWD.
 
-No tiene dependencias externas; solo usa la stdlib.
+Usa `requests.Session` para reutilizar la conexión TLS (keep-alive): el login
+encadena 3-4 peticiones y con `urllib` cada una abría una conexión nueva
+(handshake TLS + Cloudflare), lo que hacía que a veces tardara mucho. Además se
+usa un timeout de conexión corto con reintento, para que una ruta IPv6 rota o
+un pico de red no bloqueen la UI durante 30 s por petición.
 """
 
 from __future__ import annotations
@@ -15,13 +19,15 @@ import json
 import os
 import re
 import shlex
-import urllib.error
 import urllib.parse
-import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 BASE_URL = "https://dockerlabs.es"
 API_URL = f"{BASE_URL}/api"
@@ -51,35 +57,57 @@ class AuthResult:
 class DockerLabsClient:
     """Cliente sencillo basado en urllib + cookiejar."""
 
-    def __init__(self, base_url: str = BASE_URL, timeout: int = 30) -> None:
+    # (conexión, lectura) en segundos. Conectar a dockerlabs.es (Cloudflare) tarda
+    # <1 s; si no responde en 8 s casi seguro es una ruta rota y conviene reintentar.
+    CONNECT_TIMEOUT = 8.0
+
+    def __init__(self, base_url: str = BASE_URL, timeout: int = 30,
+                 session: Optional[requests.Session] = None) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
-        self.cookies = http.cookiejar.CookieJar()
-        self.opener = urllib.request.build_opener(
-            urllib.request.HTTPCookieProcessor(self.cookies)
-        )
-        self.opener.addheaders = [
-            ("User-Agent", USER_AGENT),
-            ("Accept", "application/json, text/html;q=0.9, */*;q=0.5"),
-            ("Accept-Language", "es-ES,es;q=0.9,en;q=0.8"),
-        ]
+        self.session = session or requests.Session()
+        self.session.headers.update({
+            "User-Agent": USER_AGENT,
+            "Accept": "application/json, text/html;q=0.9, */*;q=0.5",
+            "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
+        })
+        # Reintenta sólo errores de conexión (antes de enviar nada, seguro para POST).
+        retry = Retry(total=2, connect=2, read=0, status=0, backoff_factor=0.3,
+                      allowed_methods=None, raise_on_status=False)
+        # Varios hilos (catálogo, imágenes, valoraciones, avatares…) comparten la
+        # sesión; con un pool pequeño urllib3 avisaba "Connection pool is full,
+        # discarding connection" y abría conexiones nuevas cada vez.
+        adapter = HTTPAdapter(max_retries=retry, pool_connections=4, pool_maxsize=16,
+                              pool_block=False)
+        self.session.mount("https://", adapter)
+        self.session.mount("http://", adapter)
         self._csrf_token: Optional[str] = None
+
+    @property
+    def cookies(self) -> http.cookiejar.CookieJar:
+        return self.session.cookies
+
+    def close(self) -> None:
+        try:
+            self.session.close()
+        except Exception:  # noqa: BLE001
+            pass
 
     # ---------- Bajo nivel ----------
 
     def _request(self, url: str, *, method: str = "GET", data: Optional[bytes] = None,
                  headers: Optional[dict] = None) -> tuple[int, dict, bytes]:
-        req = urllib.request.Request(url, data=data, method=method)
-        if headers:
-            for key, value in headers.items():
-                req.add_header(key, value)
         try:
-            resp = self.opener.open(req, timeout=self.timeout)
-            return resp.status, dict(resp.headers), resp.read()
-        except urllib.error.HTTPError as exc:
-            return exc.code, dict(exc.headers), exc.read()
-        except urllib.error.URLError as exc:
-            raise DockerLabsError(f"Error de red contactando {url}: {exc.reason}") from exc
+            resp = self.session.request(
+                method, url, data=data, headers=headers or None,
+                timeout=(self.CONNECT_TIMEOUT, self.timeout), allow_redirects=True,
+            )
+        except requests.exceptions.Timeout as exc:
+            raise DockerLabsError(f"Tiempo de espera agotado contactando {url}") from exc
+        except requests.exceptions.RequestException as exc:
+            reason = getattr(exc, "args", [exc])[0] if exc.args else exc
+            raise DockerLabsError(f"Error de red contactando {url}: {reason}") from exc
+        return resp.status_code, dict(resp.headers), resp.content
 
     # ---------- Sesión / CSRF ----------
 

@@ -8,6 +8,8 @@ ya las importaron) y devuelve el QSS a aplicar en la QApplication.
 from __future__ import annotations
 
 import sys
+import tempfile
+from pathlib import Path
 from typing import Dict
 
 # ---------- Paletas ----------
@@ -114,9 +116,34 @@ def apply_theme(theme: str) -> str:
     return build_qss(theme)
 
 
+_CHECK_SVG = (
+    "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' "
+    "stroke='{color}' stroke-width='3.2' stroke-linecap='round' stroke-linejoin='round'>"
+    "<path d='M5 12.5l4.5 4.5L19 7'/></svg>"
+)
+
+
+def checkmark_icon_path(color: str) -> str:
+    """Ruta (con `/`) a un SVG de ✓ del color dado, para `QCheckBox::indicator { image: url() }`.
+
+    QSS no admite data-URIs, así que se escribe el fichero una vez en el directorio
+    temporal del sistema y se reutiliza.
+    """
+    safe = color.lstrip("#").lower()
+    path = Path(tempfile.gettempdir()) / f"dockerlabs-gui-check-{safe}.svg"
+    try:
+        if not path.exists():
+            path.write_text(_CHECK_SVG.format(color=color), encoding="utf-8")
+    except OSError:
+        return ""
+    return path.as_posix()
+
+
 def build_qss(theme: str = DEFAULT_THEME) -> str:
     """Genera la hoja de estilos completa para el tema indicado."""
     p = PALETTES.get(theme, PALETTES[DEFAULT_THEME])
+    check_url = checkmark_icon_path(p["ON_ACCENT"])
+    check_image = f"image: url({check_url});" if check_url else "image: none;"
     BG_DARK, BG_MID, BG_LIGHT, BG_HOVER = p["BG_DARK"], p["BG_MID"], p["BG_LIGHT"], p["BG_HOVER"]
     BG_SIDEBAR, BG_SIDEBAR_HV = p["BG_SIDEBAR"], p["BG_SIDEBAR_HV"]
     FG_PRIMARY, FG_SECONDARY, FG_MUTED = p["FG_PRIMARY"], p["FG_SECONDARY"], p["FG_MUTED"]
@@ -313,15 +340,27 @@ QComboBox::down-arrow {{
 QComboBox:hover::down-arrow, QComboBox:on::down-arrow {{
     border-top: 5px solid {ACCENT};
 }}
-QComboBox QAbstractItemView {{
+/* El popup es una ventana aparte (QComboBoxPrivateContainer). Si no se estila, el
+   marco/margen del contenedor sale del color de la paleta nativa (franjas negras
+   arriba y abajo en Windows). Contenedor y vista deben llevar el mismo fondo y
+   sin radios: la ventana del popup no es translúcida. */
+QComboBoxPrivateContainer {{
     background: {BG_MID};
     border: 1px solid {BORDER};
-    border-radius: 8px;
+    padding: 0;
+    margin: 0;
+}}
+QComboBox QAbstractItemView {{
+    background: {BG_MID};
+    border: 0;
     selection-background-color: {BG_HOVER};
     selection-color: {ACCENT};
     color: {FG_PRIMARY};
     padding: 4px;
     outline: 0;
+}}
+QComboBox QAbstractItemView QScrollBar:vertical {{
+    background: {BG_MID};
 }}
 QComboBox QAbstractItemView::item {{
     padding: 6px 10px;
@@ -398,9 +437,37 @@ QCheckBox::indicator:hover {{ border: 1px solid {ACCENT_DIM}; }}
 QCheckBox::indicator:checked {{
     background: {ACCENT};
     border: 1px solid {ACCENT};
-    image: none;
+    {check_image}
+    padding: 2px;
 }}
+QCheckBox::indicator:checked:hover {{ background: {ACCENT_HOVER}; border-color: {ACCENT_HOVER}; }}
 QCheckBox::indicator:disabled {{ background: {BORDER_SOFT}; border-color: {BORDER_SOFT}; }}
+QCheckBox::indicator:checked:disabled {{ background: {ACCENT_DIM}; border-color: {ACCENT_DIM}; }}
+
+QRadioButton {{
+    color: {FG_PRIMARY};
+    spacing: 10px;
+    padding: 4px 0;
+}}
+QRadioButton::indicator {{
+    width: 18px;
+    height: 18px;
+    border-radius: 9px;
+    border: 1px solid {BORDER};
+    background: {BG_LIGHT};
+}}
+QRadioButton::indicator:hover {{ border: 1px solid {ACCENT_DIM}; }}
+QRadioButton::indicator:checked {{
+    border: 6px solid {ACCENT};
+    background: {ON_ACCENT};
+    width: 8px;
+    height: 8px;
+}}
+QRadioButton::indicator:checked:hover {{ border-color: {ACCENT_HOVER}; }}
+QRadioButton::indicator:disabled {{ background: {BORDER_SOFT}; border-color: {BORDER_SOFT}; }}
+QRadioButton:disabled {{ color: {FG_MUTED}; }}
+
+QDialog {{ background: {BG_DARK}; }}
 
 QPushButton.danger {{
     background: transparent;

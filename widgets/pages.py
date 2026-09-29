@@ -31,6 +31,7 @@ from PyQt6.QtWidgets import (
 )
 
 from download_manager import human_eta, human_size
+from i18n import tr
 from theme import (
     ACCENT,
     BG_LIGHT,
@@ -116,7 +117,7 @@ class _GhostComboBox(QComboBox):
 
 def ghost_combo(options: list[tuple[str, str]], min_width: int = 150, height: int = 38) -> QComboBox:
     """Crea un `_GhostComboBox` con items (data, label) y paleta acorde al tema activo."""
-    from theme import BG_HOVER, BG_MID, FG_PRIMARY
+    from theme import BG_HOVER, BG_MID, BORDER, FG_PRIMARY
     combo = _GhostComboBox()
     for data, label in options:
         combo.addItem(label, data)
@@ -140,7 +141,22 @@ def ghost_combo(options: list[tuple[str, str]], min_width: int = 150, height: in
     view_pal.setColor(QPalette.ColorRole.Highlight, hover)
     view_pal.setColor(QPalette.ColorRole.HighlightedText, fg)
     view_pal.setColor(QPalette.ColorRole.Base, mid)
+    view_pal.setColor(QPalette.ColorRole.Window, mid)
     view.setPalette(view_pal)
+    # El contenedor del popup (QComboBoxPrivateContainer) es una ventana propia: si
+    # conserva la paleta nativa aparecen franjas negras arriba/abajo (Windows).
+    container = view.parentWidget()
+    if container is not None:
+        c_pal = container.palette()
+        for role in (QPalette.ColorRole.Window, QPalette.ColorRole.Base, QPalette.ColorRole.Button):
+            c_pal.setColor(role, mid)
+        container.setPalette(c_pal)
+        container.setAutoFillBackground(True)
+        container.setStyleSheet(
+            f"QComboBoxPrivateContainer {{ background: {BG_MID}; border: 1px solid {BORDER};"
+            f" padding: 0; margin: 0; }}"
+            f"QAbstractItemView {{ background: {BG_MID}; border: 0; padding: 4px; }}"
+        )
     combo.setItemDelegate(_ComboItemDelegate(combo))
     combo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
     return combo
@@ -247,7 +263,7 @@ class _DiffRow(QWidget):
         top.setSpacing(6)
         dot = QLabel("●")
         dot.setStyleSheet(f"color: {color}; font-size: 10px; background: transparent;")
-        name = QLabel(difficulty)
+        name = QLabel(tr(difficulty))
         name.setStyleSheet(f"color: {FG_SECONDARY}; font-size: 12px; background: transparent;")
         self.lbl_count = QLabel("—")
         self.lbl_count.setStyleSheet(f"color: {FG_PRIMARY}; font-size: 12px; font-weight: 600; background: transparent;")
@@ -314,7 +330,7 @@ class _RankRow(QFrame):
         num.setStyleSheet(f"color: {medal}; font-weight: 800; font-size: 12px;")
         lbl = QLabel(name)
         lbl.setStyleSheet(f"color: {FG_PRIMARY}; font-size: 12px;")
-        cnt = QLabel(f"{count} máquinas")
+        cnt = QLabel(tr("{count} máquinas").format(count=count))
         cnt.setStyleSheet(f"color: {FG_SECONDARY}; font-size: 11px;")
         lay.addWidget(num)
         lay.addWidget(lbl)
@@ -328,7 +344,7 @@ class DashboardPage(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
-        root.addWidget(page_header("Dashboard", "Estado general de DockerLabs"))
+        root.addWidget(page_header(tr("Dashboard"), tr("Estado general de DockerLabs")))
 
         content = QVBoxLayout()
         content.setContentsMargins(24, 18, 24, 24)
@@ -336,11 +352,11 @@ class DashboardPage(QWidget):
 
         grid = QGridLayout()
         grid.setSpacing(14)
-        self.card_total = make_card("Máquinas totales", "—", "Catálogo público")
-        self.card_done = make_card("Completadas", "—", "Por el usuario actual")
-        self.card_downloads = make_card("Descargas", "—", "Máquinas en local")
-        self.card_labs = make_card("Laboratorio", "—", "Comprobando Docker…")
-        self.card_session = make_card("Sesión", "Sin sesión", "Login para sincronizar")
+        self.card_total = make_card(tr("Máquinas totales"), "—", tr("Catálogo público"))
+        self.card_done = make_card(tr("Completadas"), "—", tr("Por el usuario actual"))
+        self.card_downloads = make_card(tr("Descargas"), "—", tr("Máquinas en local"))
+        self.card_labs = make_card(tr("Laboratorio"), "—", tr("Comprobando Docker…"))
+        self.card_session = make_card(tr("Sesión"), tr("Sin sesión"), tr("Login para sincronizar"))
         grid.addWidget(self.card_total, 0, 0)
         grid.addWidget(self.card_done, 0, 1)
         grid.addWidget(self.card_downloads, 0, 2)
@@ -349,7 +365,7 @@ class DashboardPage(QWidget):
         content.addLayout(grid)
 
         # --- Progreso global ---------------------------------------------------
-        prog = _panel("Tu progreso")
+        prog = _panel(tr("Tu progreso"))
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
@@ -359,7 +375,7 @@ class DashboardPage(QWidget):
             f"QProgressBar {{ background: {BG_LIGHT}; border: 0; border-radius: 5px; }}"
             f"QProgressBar::chunk {{ background: {ACCENT}; border-radius: 5px; }}"
         )
-        self.lbl_progress = QLabel("Cargando catálogo…")
+        self.lbl_progress = QLabel(tr("Cargando catálogo…"))
         self.lbl_progress.setStyleSheet(f"color: {FG_SECONDARY}; font-size: 12px; background: transparent;")
         prog.body.addWidget(self.lbl_progress)
         prog.body.addWidget(self.progress)
@@ -377,12 +393,12 @@ class DashboardPage(QWidget):
         # --- Últimas máquinas + ranking ------------------------------------------
         cols = QHBoxLayout()
         cols.setSpacing(14)
-        self.panel_latest = _panel("Últimas máquinas publicadas")
+        self.panel_latest = _panel(tr("Últimas máquinas publicadas"))
         self.latest_host = QVBoxLayout()
         self.latest_host.setSpacing(4)
         self.panel_latest.body.addLayout(self.latest_host)
         self.panel_latest.body.addStretch(1)
-        self.panel_ranking = _panel("Top creadores")
+        self.panel_ranking = _panel(tr("Top creadores"))
         self.ranking_host = QVBoxLayout()
         self.ranking_host.setSpacing(4)
         self.panel_ranking.body.addLayout(self.ranking_host)
@@ -391,7 +407,7 @@ class DashboardPage(QWidget):
         cols.addWidget(self.panel_ranking, 2)
         content.addLayout(cols, 1)
         for host in (self.latest_host, self.ranking_host):
-            lb = QLabel("Sin datos todavía — el catálogo se carga al iniciar (F5 para actualizar).")
+            lb = QLabel(tr("Sin datos todavía — el catálogo se carga al iniciar (F5 para actualizar)."))
             lb.setStyleSheet(f"color: {FG_MUTED}; font-size: 11px; background: transparent;")
             lb.setWordWrap(True)
             host.addWidget(lb)
@@ -416,8 +432,9 @@ class DashboardPage(QWidget):
         pct = int(round(100 * done / total)) if total else 0
         self.progress.setValue(pct)
         self.lbl_progress.setText(
-            f"<b style='color:{FG_PRIMARY}'>{done}</b> de {total} máquinas completadas · {pct}%"
-            if total else "Catálogo vacío"
+            tr("<b style='color:{color}'>{done}</b> de {total} máquinas completadas · {pct}%").format(
+                color=FG_PRIMARY, done=done, total=total, pct=pct)
+            if total else tr("Catálogo vacío")
         )
         by_all = catalog.counts_by_difficulty()
         by_done = catalog.counts_by_difficulty(self._completed)
@@ -428,14 +445,14 @@ class DashboardPage(QWidget):
         for m in catalog.latest(6):
             self.latest_host.addWidget(_LatestRow(m, m.name in self._completed))
         if not catalog.machines:
-            self.latest_host.addWidget(_muted("El catálogo está vacío."))
+            self.latest_host.addWidget(_muted(tr("El catálogo está vacío.")))
 
         _clear_layout(self.ranking_host)
         ranking = sorted(catalog.ranking_creators, key=lambda r: -int(r.get("maquinas", 0) or 0))[:6]
         for i, r in enumerate(ranking, 1):
             self.ranking_host.addWidget(_RankRow(i, str(r.get("nombre", "—")), int(r.get("maquinas", 0) or 0)))
         if not ranking:
-            self.ranking_host.addWidget(_muted("Sin ranking disponible."))
+            self.ranking_host.addWidget(_muted(tr("Sin ranking disponible.")))
 
     def set_completed(self, completed) -> None:
         self._completed = set(completed or [])
@@ -461,23 +478,23 @@ class DashboardPage(QWidget):
         if sub is None:
             return
         if not info.available:
-            sub.setText("Docker no instalado")
+            sub.setText(tr("Docker no instalado"))
         elif getattr(info, "needs_elevation", False):
-            sub.setText("Docker: falta permiso (ver Laboratorio)")
+            sub.setText(tr("Docker: falta permiso (ver Laboratorio)"))
         elif not info.running:
-            sub.setText("Docker no responde")
+            sub.setText(tr("Docker no responde"))
         else:
-            sub.setText(f"Docker {info.version} listo · en ejecución")
+            sub.setText(tr("Docker {version} listo · en ejecución").format(version=info.version))
 
     def set_session(self, username: Optional[str]) -> None:
         if username:
             self.card_session.value_label.setText(username)
             if self.card_session.sub_label:
-                self.card_session.sub_label.setText("Sesión activa")
+                self.card_session.sub_label.setText(tr("Sesión activa"))
         else:
-            self.card_session.value_label.setText("Sin sesión")
+            self.card_session.value_label.setText(tr("Sin sesión"))
             if self.card_session.sub_label:
-                self.card_session.sub_label.setText("Login para sincronizar")
+                self.card_session.sub_label.setText(tr("Login para sincronizar"))
 
 
 # ============================================================
@@ -498,7 +515,7 @@ class MachinesPage(QWidget):
 
     STATES = ["Todas", "Completadas", "Pendientes", "Descargadas", "En ejecución"]
 
-    def __init__(self, client=None, parent=None) -> None:
+    def __init__(self, client=None, parent=None, media_cache=None) -> None:
         super().__init__(parent)
         from PyQt6.QtWidgets import QSplitter, QTableView
 
@@ -529,7 +546,7 @@ class MachinesPage(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
-        root.addWidget(page_header("Máquinas", "Catálogo público de DockerLabs"))
+        root.addWidget(page_header(tr("Máquinas"), tr("Catálogo público de DockerLabs")))
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setChildrenCollapsible(False)
@@ -555,7 +572,7 @@ class MachinesPage(QWidget):
         search_icon.setPixmap(svg_icon("search", FG_MUTED, 18).pixmap(18, 18))
         sl.addWidget(search_icon)
         self.search = QLineEdit()
-        self.search.setPlaceholderText("Buscar por nombre, autor o descripción…  (Ctrl+F)")
+        self.search.setPlaceholderText(tr("Buscar por nombre, autor o descripción…  (Ctrl+F)"))
         self.search.setFrame(False)
         self.search.setClearButtonEnabled(True)
         self.search.setStyleSheet(
@@ -567,18 +584,18 @@ class MachinesPage(QWidget):
         search_wrap.setMinimumHeight(38)
         filter_bar.addWidget(search_wrap, 2)
 
-        self.combo_diff = self._make_combo("Dificultad", DIFICULTADES)
+        self.combo_diff = self._make_combo(tr("Dificultad"), DIFICULTADES)
         self.combo_diff.currentIndexChanged.connect(
             lambda _i: self.proxy.set_difficulty(self.combo_diff.currentData() or "Todas"))
         filter_bar.addWidget(self.combo_diff, 0)
-        self.combo_state = self._make_combo("Estado", self.STATES)
+        self.combo_state = self._make_combo(tr("Estado"), self.STATES)
         self.combo_state.currentIndexChanged.connect(
             lambda _i: self.proxy.set_state(self.combo_state.currentData() or "Todas"))
         filter_bar.addWidget(self.combo_state, 0)
 
         self.btn_refresh = QPushButton()
         self.btn_refresh.setIcon(svg_icon("refresh", FG_PRIMARY, 16))
-        self.btn_refresh.setToolTip("Actualizar catálogo (F5)")
+        self.btn_refresh.setToolTip(tr("Actualizar catálogo (F5)"))
         self.btn_refresh.setFixedSize(38, 38)
         self.btn_refresh.setProperty("class", "ghost")
         self.btn_refresh.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -617,7 +634,7 @@ class MachinesPage(QWidget):
         # Estado cargando (skeleton + spinner) y estado vacío
         self.loading = LoadingPanel(rows=10)
         body.addWidget(self.loading, 1)
-        self.empty = QLabel("Sin catálogo.")
+        self.empty = QLabel(tr("Sin catálogo."))
         self.empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.empty.setStyleSheet(f"color: {FG_MUTED}; font-size: 13px; padding: 24px;")
         self.empty.setVisible(False)
@@ -629,7 +646,7 @@ class MachinesPage(QWidget):
         body.addWidget(self.lbl_count)
         splitter.addWidget(left)
 
-        self.detail = MachineDetailPanel(client=client)
+        self.detail = MachineDetailPanel(client=client, media_cache=media_cache)
         self.detail.request_download.connect(self.request_download)
         self.detail.request_cancel_download.connect(self.request_cancel_download)
         self.detail.request_launch.connect(self.request_launch)
@@ -648,7 +665,7 @@ class MachinesPage(QWidget):
 
     def _make_combo(self, prefix: str, options: list[str]) -> QComboBox:
         """ComboBox 'ghost' que muestra 'prefix: opcion' y se disimula con el tema."""
-        return ghost_combo([(opt, f"{prefix}: {opt}") for opt in options], min_width=150)
+        return ghost_combo([(opt, f"{prefix}: {tr(opt)}") for opt in options], min_width=150)
 
     # ---- API pública ----
 
@@ -660,7 +677,7 @@ class MachinesPage(QWidget):
         self.table.setVisible(has)
         self.empty.setVisible(not has)
         if not has:
-            self.empty.setText("Sin catálogo. Pulsa Actualizar cuando tengas conexión.")
+            self.empty.setText(tr("Sin catálogo. Pulsa Actualizar cuando tengas conexión."))
         self._update_count()
         # refrescar el detalle si la máquina sigue existiendo
         if self.detail.machine and catalog:
@@ -673,15 +690,15 @@ class MachinesPage(QWidget):
         """Muestra el skeleton mientras no haya filas; con catálogo sólo bloquea el botón."""
         self.btn_refresh.setEnabled(not loading)
         if loading and not self.model.rowCount():
-            self.loading.set_text(text or "Cargando catálogo…")
+            self.loading.set_text(text or tr("Cargando catálogo…"))
             self.loading.setVisible(True)
             self.empty.setVisible(False)
             self.table.setVisible(False)
-            self.lbl_count.setText("Cargando…")
+            self.lbl_count.setText(tr("Cargando…"))
         elif not loading and not self.model.rowCount():
             self.loading.setVisible(False)
             self.empty.setVisible(True)
-            self.lbl_count.setText("Sin catálogo")
+            self.lbl_count.setText(tr("Sin catálogo"))
 
     @property
     def is_loading(self) -> bool:
@@ -712,6 +729,8 @@ class MachinesPage(QWidget):
         self._downloaded = set(names or [])
         self.model.set_downloaded(self._downloaded)
         self._update_count(); self._push_status_to_detail()
+        # Repintado inmediato de la tabla (sin esperar al siguiente evento de la vista)
+        self.table.viewport().update()
 
     def set_running(self, names) -> None:
         self._running = set(names or [])
@@ -740,11 +759,12 @@ class MachinesPage(QWidget):
         done = sum(1 for n in self.names if n in self._completed_names)
         dl = sum(1 for n in self.names if n in self._downloaded)
         self.lbl_count.setText(
-            f"{shown} de {total} máquinas · {done} completadas · {dl} descargadas"
-            if total else ("Cargando…" if self.loading.isVisible() else "Sin catálogo")
+            tr("{shown} de {total} máquinas · {done} completadas · {dl} descargadas").format(
+                shown=shown, total=total, done=done, dl=dl)
+            if total else (tr("Cargando…") if self.loading.isVisible() else tr("Sin catálogo"))
         )
         if total and shown == 0:
-            self.empty.setText("Ninguna máquina coincide con los filtros.")
+            self.empty.setText(tr("Ninguna máquina coincide con los filtros."))
             self.empty.setVisible(True)
         elif total:
             self.empty.setVisible(False)
@@ -787,12 +807,12 @@ class MachinesPage(QWidget):
             f"QMenu::item:selected {{ background: {BG_LIGHT}; color: {ACCENT}; }}"
             f"QMenu::separator {{ height: 1px; background: {BORDER_SOFT}; margin: 4px 8px; }}"
         )
-        act_detail = QAction(svg_icon("info", FG_PRIMARY, 16), "Ver detalle", self)
+        act_detail = QAction(svg_icon("info", FG_PRIMARY, 16), tr("Ver detalle"), self)
         act_detail.triggered.connect(lambda: self.show_detail(name))
         menu.addAction(act_detail)
         menu.addSeparator()
 
-        toggle_text = "Desmarcar como completada" if done else "Marcar como completada"
+        toggle_text = tr("Desmarcar como completada") if done else tr("Marcar como completada")
         act_toggle = QAction(svg_icon("check" if not done else "circle",
                                       ACCENT if not done else FG_MUTED, 16), toggle_text, self)
         act_toggle.triggered.connect(lambda: self.request_toggle_completed.emit(name))
@@ -800,23 +820,23 @@ class MachinesPage(QWidget):
         menu.addSeparator()
 
         if downloading:
-            act_dl = QAction(svg_icon("trash", DANGER, 16), "Cancelar descarga", self)
+            act_dl = QAction(svg_icon("trash", DANGER, 16), tr("Cancelar descarga"), self)
             act_dl.triggered.connect(lambda: self.request_cancel_download.emit(name))
             menu.addAction(act_dl)
         elif downloaded:
             running = name in self._running
             act_launch = QAction(svg_icon("docker", SUCCESS if not running else FG_MUTED, 16),
-                                 "Ver en Laboratorio" if running else "Lanzar laboratorio (Docker)", self)
+                                 tr("Ver en Laboratorio") if running else tr("Lanzar laboratorio (Docker)"), self)
             act_launch.triggered.connect(lambda: self.request_launch.emit(name))
             menu.addAction(act_launch)
-            act_dl = QAction(svg_icon("folder", FG_MUTED, 16), "Ya descargada", self)
+            act_dl = QAction(svg_icon("folder", FG_MUTED, 16), tr("Ya descargada"), self)
             act_dl.setEnabled(False)
             menu.addAction(act_dl)
         else:
-            act_dl = QAction(svg_icon("download", ACCENT, 16), "Descargar", self)
+            act_dl = QAction(svg_icon("download", ACCENT, 16), tr("Descargar"), self)
             if not url:
                 act_dl.setEnabled(False)
-                act_dl.setText("Sin enlace de descarga")
+                act_dl.setText(tr("Sin enlace de descarga"))
             act_dl.triggered.connect(lambda: self.request_download.emit(name, url))
             menu.addAction(act_dl)
 
@@ -853,7 +873,7 @@ class DownloadItemWidget(QFrame):
             f"font-weight: 700; font-size: 14px; color: {FG_PRIMARY};"
         )
         top.addWidget(self.lbl_title, 1)
-        self.lbl_state = QLabel("En cola")
+        self.lbl_state = QLabel(tr("En cola"))
         self.lbl_state.setAlignment(
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
         )
@@ -901,12 +921,12 @@ class DownloadItemWidget(QFrame):
         self._state_text = state.state
         self.bar.setValue(int(state.percent))
         self.lbl_state.setText({
-            "queued": "En cola",
-            "running": "Descargando",
-            "verifying": "Verificando…",
-            "done": "Completada",
-            "error": "Error",
-            "cancelled": "Cancelada",
+            "queued": tr("En cola"),
+            "running": tr("Descargando"),
+            "verifying": tr("Verificando…"),
+            "done": tr("Completada"),
+            "error": tr("Error"),
+            "cancelled": tr("Cancelada"),
         }.get(state.state, state.state))
         color = {
             "queued": FG_MUTED, "running": WARNING, "verifying": ACCENT,
@@ -917,7 +937,7 @@ class DownloadItemWidget(QFrame):
         size_done = human_size(state.bytes_done)
         size_total = human_size(state.size_total) if state.size_total else "—"
         speed = f"{human_size(state.speed_bps)}/s" if state.speed_bps else ""
-        eta = f"ETA {human_eta(state.eta_seconds)}" if state.eta_seconds else ""
+        eta = tr("ETA {eta}").format(eta=human_eta(state.eta_seconds)) if state.eta_seconds else ""
         fname = f"  ·  {state.filename}" if state.filename else ""
         parts = [f"{size_done} / {size_total}"]
         if speed:
@@ -930,11 +950,11 @@ class DownloadItemWidget(QFrame):
         self.lbl_info.setText(info_line)
 
         if state.state in ("running", "verifying", "queued"):
-            self.btn_action.setText("Cancelar")
+            self.btn_action.setText(tr("Cancelar"))
         elif state.state == "done":
-            self.btn_action.setText("Abrir carpeta")
+            self.btn_action.setText(tr("Abrir carpeta"))
         else:
-            self.btn_action.setText("Quitar")
+            self.btn_action.setText(tr("Quitar"))
 
 
 class DownloadsPage(QWidget):
@@ -950,8 +970,8 @@ class DownloadsPage(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
-        root.addWidget(page_header("Descargas",
-                                   "Máquinas que se están descargando desde DockerLabs"))
+        root.addWidget(page_header(tr("Descargas"),
+                                   tr("Máquinas que se están descargando desde DockerLabs")))
 
         body = QVBoxLayout()
         body.setContentsMargins(24, 16, 24, 24)
@@ -959,13 +979,13 @@ class DownloadsPage(QWidget):
 
         top = QHBoxLayout()
         top.setSpacing(10)
-        self.lbl_summary = QLabel("Sin descargas")
+        self.lbl_summary = QLabel(tr("Sin descargas"))
         self.lbl_summary.setStyleSheet(f"color: {FG_MUTED};")
-        self.btn_clear = QPushButton("  Limpiar terminadas")
+        self.btn_clear = QPushButton("  " + tr("Limpiar terminadas"))
         self.btn_clear.setProperty("class", "ghost")
         self.btn_clear.setIcon(svg_icon("trash", FG_SECONDARY, 15))
         self.btn_clear.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_clear.setToolTip("Quita de la lista las descargas completadas, fallidas o canceladas")
+        self.btn_clear.setToolTip(tr("Quita de la lista las descargas completadas, fallidas o canceladas"))
         self.btn_clear.setEnabled(False)
         self.btn_clear.clicked.connect(self.request_clear_finished.emit)
         top.addWidget(self.lbl_summary)
@@ -991,10 +1011,10 @@ class DownloadsPage(QWidget):
         self.scroll.setWidget(self.list_host)
         body.addWidget(self.scroll, 1)
 
-        self.empty = QLabel(
+        self.empty = QLabel(tr(
             "Aún no hay descargas. Ve a Máquinas, haz clic derecho sobre una y elige\n"
             "“Descargar”. Aparecerá aquí con su barra de progreso."
-        )
+        ))
         self.empty.setWordWrap(True)
         self.empty.setStyleSheet(f"color: {FG_MUTED}; font-size: 13px; padding: 24px 0;")
         body.addWidget(self.empty)
@@ -1031,12 +1051,13 @@ class DownloadsPage(QWidget):
         self.empty.setVisible(n == 0)
         self.scroll.setVisible(n > 0)
         self.btn_clear.setEnabled(finished > 0)
-        self.btn_clear.setText(f"  Limpiar terminadas ({finished})" if finished else "  Limpiar terminadas")
+        self.btn_clear.setText("  " + (tr("Limpiar terminadas ({n})").format(n=finished) if finished else tr("Limpiar terminadas")))
         if n == 0:
-            self.lbl_summary.setText("Sin descargas")
+            self.lbl_summary.setText(tr("Sin descargas"))
         else:
             self.lbl_summary.setText(
-                f"{n} descargas · {active} en curso · {done} completadas"
+                tr("{n} descargas · {active} en curso · {done} completadas").format(
+                    n=n, active=active, done=done)
             )
 
 
@@ -1060,8 +1081,8 @@ class CompletedPage(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
-        root.addWidget(page_header("Completadas",
-                                   "Máquinas marcadas como hechas en tu cuenta"))
+        root.addWidget(page_header(tr("Completadas"),
+                                   tr("Máquinas marcadas como hechas en tu cuenta")))
 
         body = QVBoxLayout()
         body.setContentsMargins(24, 16, 24, 24)
@@ -1069,21 +1090,21 @@ class CompletedPage(QWidget):
 
         top = QHBoxLayout()
         top.setSpacing(10)
-        self.lbl = QLabel("Inicia sesión para sincronizar.")
+        self.lbl = QLabel(tr("Inicia sesión para sincronizar."))
         self.lbl.setStyleSheet(f"color: {FG_SECONDARY};")
         top.addWidget(self.lbl, 1)
         self.search = QLineEdit()
-        self.search.setPlaceholderText("Buscar…")
+        self.search.setPlaceholderText(tr("Buscar…"))
         self.search.setClearButtonEnabled(True)
         self.search.setFixedWidth(220)
         self.search.textChanged.connect(self._rebuild)
         top.addWidget(self.search)
-        self.chk_group = QCheckBox("Agrupar por dificultad")
+        self.chk_group = QCheckBox(tr("Agrupar por dificultad"))
         self.chk_group.setChecked(True)
         self.chk_group.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.chk_group.toggled.connect(self._rebuild)
         top.addWidget(self.chk_group)
-        self.btn_refresh = QPushButton("  Sincronizar")
+        self.btn_refresh = QPushButton("  " + tr("Sincronizar"))
         self.btn_refresh.setProperty("class", "primary")
         self.btn_refresh.setIcon(svg_icon("refresh", ON_ACCENT, 16))
         self.btn_refresh.setMinimumHeight(34)
@@ -1103,7 +1124,7 @@ class CompletedPage(QWidget):
         self.list_widget.itemDoubleClicked.connect(self._on_double_click)
         body.addWidget(self.list_widget, 1)
 
-        hint = QLabel("Doble clic abre la máquina en el catálogo · clic derecho para desmarcar.")
+        hint = QLabel(tr("Doble clic abre la máquina en el catálogo · clic derecho para desmarcar."))
         hint.setStyleSheet(f"color: {FG_MUTED}; font-size: 11px;")
         body.addWidget(hint)
 
@@ -1136,12 +1157,13 @@ class CompletedPage(QWidget):
         names = [n for n in self._names if q in n.lower()]
         total = len(self._names)
         if total == 0:
-            self._add_placeholder("Sin máquinas completadas")
-            self.lbl.setText("0 máquinas completadas")
+            self._add_placeholder(tr("Sin máquinas completadas"))
+            self.lbl.setText(tr("0 máquinas completadas"))
             return
-        self.lbl.setText(f"{total} máquinas completadas" + (f" · {len(names)} coinciden" if q else ""))
+        self.lbl.setText(tr("{total} máquinas completadas").format(total=total)
+                         + (tr(" · {n} coinciden").format(n=len(names)) if q else ""))
         if not names:
-            self._add_placeholder(f"Ninguna completada coincide con «{self.search.text().strip()}»")
+            self._add_placeholder(tr("Ninguna completada coincide con «{q}»").format(q=self.search.text().strip()))
             return
         group = self.chk_group.isChecked() and self._catalog is not None
         if not group:
@@ -1158,7 +1180,7 @@ class CompletedPage(QWidget):
             items = buckets.get(d) or []
             if not items:
                 continue
-            self._add_group_header(d or "Sin clasificar", len(items), difficulty_color(d) if d else FG_MUTED)
+            self._add_group_header(tr(d) if d else tr("Sin clasificar"), len(items), difficulty_color(d) if d else FG_MUTED)
             for n in items:
                 self._add_machine(n, indent=True)
 
@@ -1199,9 +1221,9 @@ class CompletedPage(QWidget):
         if not n:
             return
         menu = QMenu(self)
-        act_open = QAction(svg_icon("machines", FG_PRIMARY, 14), "Ver en el catálogo", menu)
+        act_open = QAction(svg_icon("machines", FG_PRIMARY, 14), tr("Ver en el catálogo"), menu)
         act_open.triggered.connect(lambda: self.request_open_machine.emit(n))
-        act_undo = QAction(svg_icon("x", DANGER, 14), "Desmarcar como completada", menu)
+        act_undo = QAction(svg_icon("x", DANGER, 14), tr("Desmarcar como completada"), menu)
         act_undo.triggered.connect(lambda: self.request_toggle_completed.emit(n))
         menu.addAction(act_open)
         menu.addSeparator()
@@ -1227,7 +1249,7 @@ class SessionPage(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
-        self.header = page_header("Sesión", "Inicia sesión en DockerLabs")
+        self.header = page_header(tr("Sesión"), tr("Inicia sesión en DockerLabs"))
         root.addWidget(self.header)
 
         body = QVBoxLayout()
@@ -1244,15 +1266,15 @@ class SessionPage(QWidget):
         cl = QGridLayout(self.login_card)
         cl.setContentsMargins(20, 20, 20, 20)
         cl.setHorizontalSpacing(12); cl.setVerticalSpacing(10)
-        cl.addWidget(QLabel("Usuario"), 0, 0)
+        cl.addWidget(QLabel(tr("Usuario")), 0, 0)
         self.in_user = QLineEdit(); self.in_user.setMinimumHeight(36)
         cl.addWidget(self.in_user, 0, 1)
-        cl.addWidget(QLabel("Contraseña"), 1, 0)
+        cl.addWidget(QLabel(tr("Contraseña")), 1, 0)
         self.in_pass = QLineEdit(); self.in_pass.setEchoMode(QLineEdit.EchoMode.Password)
         self.in_pass.setMinimumHeight(36)
         cl.addWidget(self.in_pass, 1, 1)
 
-        self.btn_login = QPushButton("Iniciar sesión")
+        self.btn_login = QPushButton(tr("Iniciar sesión"))
         self.btn_login.setProperty("class", "primary")
         self.btn_login.setIcon(svg_icon("session", ON_ACCENT, 16))
         self.btn_login.setMinimumHeight(40)
@@ -1263,10 +1285,10 @@ class SessionPage(QWidget):
         self.in_pass.returnPressed.connect(self._emit_login)
         cl.addWidget(self.btn_login, 2, 0, 1, 2)
 
-        info = QLabel(
+        info = QLabel(tr(
             "Tu sesión se guardará cifrada (cookie de Flask) en un .env de la "
             "carpeta de la app para que no tengas que volver a iniciar sesión cada vez."
-        )
+        ))
         info.setStyleSheet(f"color: {FG_MUTED}; font-size: 12px;")
         info.setWordWrap(True)
         cl.addWidget(info, 3, 0, 1, 2)
@@ -1303,7 +1325,7 @@ class SessionPage(QWidget):
         pl.addWidget(self.lbl_username)
 
         # Sub-línea: sesión activa
-        sub = QLabel("Sesión activa  ·  conectado a DockerLabs")
+        sub = QLabel(tr("Sesión activa  ·  conectado a DockerLabs"))
         sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
         sub.setStyleSheet(f"color: {SUCCESS}; font-size: 12px; font-weight: 600;")
         pl.addWidget(sub)
@@ -1317,7 +1339,7 @@ class SessionPage(QWidget):
         # Botón cerrar sesión
         btn_row = QHBoxLayout()
         btn_row.addStretch(1)
-        self.btn_logout = QPushButton("  Cerrar sesión")
+        self.btn_logout = QPushButton("  " + tr("Cerrar sesión"))
         self.btn_logout.setIcon(svg_icon("logout", ON_ACCENT, 16))
         self.btn_logout.setProperty("class", "primary")
         self.btn_logout.setMinimumHeight(40)
@@ -1357,9 +1379,9 @@ class SessionPage(QWidget):
         title = self.header.findChild(QLabel, "pageTitle")
         sub = self.header.findChild(QLabel, "pageSubtitle")
         if title:
-            title.setText("Mi cuenta")
+            title.setText(tr("Mi cuenta"))
         if sub:
-            sub.setText("Estado de tu sesión en DockerLabs")
+            sub.setText(tr("Estado de tu sesión en DockerLabs"))
 
     def set_logged_out(self) -> None:
         self._username = None
@@ -1370,15 +1392,16 @@ class SessionPage(QWidget):
         title = self.header.findChild(QLabel, "pageTitle")
         sub = self.header.findChild(QLabel, "pageSubtitle")
         if title:
-            title.setText("Sesión")
+            title.setText(tr("Sesión"))
         if sub:
-            sub.setText("Inicia sesión en DockerLabs")
+            sub.setText(tr("Inicia sesión en DockerLabs"))
 
     def update_stats(self, completed_count: int) -> None:
         self._completed_count = int(completed_count)
-        plural = "s" if self._completed_count != 1 else ""
+        n = self._completed_count
         self.lbl_stats.setText(
-            f"{self._completed_count} máquina{plural} completada{plural} sincronizada{plural}"
+            tr("1 máquina completada sincronizada") if n == 1
+            else tr("{n} máquinas completadas sincronizadas").format(n=n)
         )
 
     def set_avatar_pixmap(self, data: bytes) -> None:
@@ -1398,17 +1421,24 @@ class SettingsPage(QWidget):
     request_set_docker_network = pyqtSignal(str)
     request_set_max_concurrent = pyqtSignal(int)
     request_set_theme = pyqtSignal(str)
+    request_set_language = pyqtSignal(str)
 
     THEME_OPTIONS = [
-        ("dark", "Oscuro (por defecto)"),
-        ("light", "Claro"),
+        ("dark", tr("Oscuro (por defecto)")),
+        ("light", tr("Claro")),
+    ]
+
+    LANGUAGE_OPTIONS = [
+        ("auto", tr("Automático (idioma del sistema)")),
+        ("es", "Español"),
+        ("en", "English"),
     ]
 
     DOCKER_NET_OPTIONS = [
-        ("auto", "Automático (recomendado)"),
-        ("bridge", "Bridge: IP interna del contenedor (Linux nativo)"),
-        ("bridge+ports", "Publicar puertos EXPOSE en 127.0.0.1 (Docker Desktop)"),
-        ("host", "Red del host (solo Linux)"),
+        ("auto", tr("Automático (recomendado)")),
+        ("bridge", tr("Bridge: IP interna del contenedor (Linux nativo)")),
+        ("bridge+ports", tr("Publicar puertos EXPOSE en 127.0.0.1 (Docker Desktop)")),
+        ("host", tr("Red del host (solo Linux)")),
     ]
 
     def __init__(self, parent=None) -> None:
@@ -1418,19 +1448,19 @@ class SettingsPage(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
-        root.addWidget(page_header("Ajustes", "Configuración del cliente"))
+        root.addWidget(page_header(tr("Ajustes"), tr("Configuración del cliente")))
 
         body = QVBoxLayout()
         body.setContentsMargins(24, 18, 24, 24)
         body.setSpacing(14)
 
         # ---------- Carpeta de descargas ----------
-        card_dir = self._make_card("Carpeta de descargas")
+        card_dir = self._make_card(tr("Carpeta de descargas"))
         cdl = card_dir.layout()
-        sub_dir = QLabel(
+        sub_dir = QLabel(tr(
             "Aquí se guardan los .zip de las máquinas descargadas. El catálogo"
             " se gestiona internamente y no es configurable."
-        )
+        ))
         sub_dir.setStyleSheet(f"color: {FG_MUTED}; font-size: 12px;")
         sub_dir.setWordWrap(True)
         cdl.addWidget(sub_dir)
@@ -1447,14 +1477,14 @@ class SettingsPage(QWidget):
         )
         row_dir.addWidget(self.in_dir, 1)
 
-        self.btn_browse = QPushButton("Cambiar…")
+        self.btn_browse = QPushButton(tr("Cambiar…"))
         self.btn_browse.setProperty("class", "primary")
         self.btn_browse.setIcon(svg_icon("folder", ON_ACCENT, 16))
         self.btn_browse.setMinimumHeight(36)
         self.btn_browse.clicked.connect(self._on_browse)
         row_dir.addWidget(self.btn_browse)
 
-        self.btn_open = QPushButton("Abrir")
+        self.btn_open = QPushButton(tr("Abrir"))
         self.btn_open.setProperty("class", "ghost")
         self.btn_open.setIcon(svg_icon("folder", FG_PRIMARY, 16))
         self.btn_open.setMinimumHeight(36)
@@ -1464,7 +1494,7 @@ class SettingsPage(QWidget):
 
         row_conc = QHBoxLayout()
         row_conc.setSpacing(10)
-        lbl_conc = QLabel("Descargas simultáneas")
+        lbl_conc = QLabel(tr("Descargas simultáneas"))
         lbl_conc.setStyleSheet(f"color: {FG_PRIMARY}; font-size: 12px;")
         self.spin_concurrent = QSpinBox()
         self.spin_concurrent.setRange(1, 6)
@@ -1473,13 +1503,13 @@ class SettingsPage(QWidget):
         self.spin_concurrent.setButtonSymbols(QSpinBox.ButtonSymbols.PlusMinus)
         self.spin_concurrent.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.spin_concurrent.setMinimumHeight(32)
-        self.spin_concurrent.setToolTip("Número máximo de máquinas descargándose a la vez; el resto espera en cola")
+        self.spin_concurrent.setToolTip(tr("Número máximo de máquinas descargándose a la vez; el resto espera en cola"))
         self.spin_concurrent.valueChanged.connect(self.request_set_max_concurrent.emit)
-        hint_conc = QLabel(
+        hint_conc = QLabel(tr(
             "El servidor de DockerLabs limita cada conexión a ~0,5 MB/s y no admite descargas por "
             "partes, así que una máquina no puede ir más rápido; sí puedes bajar varias a la vez. "
             "Con muchas conexiones a veces devuelve errores 500 (se reintenta solo)."
-        )
+        ))
         hint_conc.setStyleSheet(f"color: {FG_MUTED}; font-size: 11px;")
         hint_conc.setWordWrap(True)
         row_conc.addWidget(lbl_conc)
@@ -1489,35 +1519,35 @@ class SettingsPage(QWidget):
         body.addWidget(card_dir)
 
         # ---------- Notificaciones ----------
-        card_notif = self._make_card("Notificaciones")
+        card_notif = self._make_card(tr("Notificaciones"))
         cnl = card_notif.layout()
 
-        self.chk_in_app = QCheckBox("Mostrar notificaciones in-app (esquina inferior derecha)")
+        self.chk_in_app = QCheckBox(tr("Mostrar notificaciones in-app (esquina inferior derecha)"))
         self.chk_in_app.stateChanged.connect(
             lambda s: self.request_set_in_app_notifications.emit(bool(s))
         )
         cnl.addWidget(self.chk_in_app)
 
-        self.chk_os = QCheckBox("Enviar notificaciones al sistema operativo (buzón del SO)")
+        self.chk_os = QCheckBox(tr("Enviar notificaciones al sistema operativo (buzón del SO)"))
         self.chk_os.stateChanged.connect(
             lambda s: self.request_set_os_notifications.emit(bool(s))
         )
         cnl.addWidget(self.chk_os)
 
-        self.lbl_backend = QLabel("Detectando backend…")
+        self.lbl_backend = QLabel(tr("Detectando backend…"))
         self.lbl_backend.setStyleSheet(f"color: {FG_MUTED}; font-size: 11px;")
         self.lbl_backend.setWordWrap(True)
         cnl.addWidget(self.lbl_backend)
         body.addWidget(card_notif)
 
         # ---------- Docker ----------
-        card_docker = self._make_card("Laboratorio (Docker)")
+        card_docker = self._make_card(tr("Laboratorio (Docker)"))
         cdk = card_docker.layout()
-        sub_dk = QLabel(
+        sub_dk = QLabel(tr(
             "Cómo se expone la máquina al lanzarla. En Linux con Docker Engine la IP del "
             "contenedor es accesible directamente; en Docker Desktop (Windows/macOS) no, así "
             "que se publican los puertos EXPOSE en localhost."
-        )
+        ))
         sub_dk.setStyleSheet(f"color: {FG_MUTED}; font-size: 12px;")
         sub_dk.setWordWrap(True)
         cdk.addWidget(sub_dk)
@@ -1531,37 +1561,56 @@ class SettingsPage(QWidget):
         body.addWidget(card_docker)
 
         # ---------- Apariencia ----------
-        card_theme = self._make_card("Apariencia")
+        card_theme = self._make_card(tr("Apariencia"))
         ctl = card_theme.layout()
         row_theme = QHBoxLayout()
         row_theme.setSpacing(10)
-        lbl_theme = QLabel("Tema")
+        lbl_theme = QLabel(tr("Tema"))
         lbl_theme.setStyleSheet(f"color: {FG_PRIMARY}; font-size: 12px;")
         self.combo_theme = ghost_combo(self.THEME_OPTIONS, min_width=220, height=36)
         self.combo_theme.currentIndexChanged.connect(
             lambda _i: self.request_set_theme.emit(self.combo_theme.currentData() or "dark")
         )
-        self.lbl_theme_hint = QLabel(
+        self.lbl_theme_hint = QLabel(tr(
             "El cambio se aplica al instante a la mayoría de la interfaz; "
             "algunos paneles ya abiertos se repintan por completo al reiniciar."
-        )
+        ))
         self.lbl_theme_hint.setStyleSheet(f"color: {FG_MUTED}; font-size: 11px;")
         self.lbl_theme_hint.setWordWrap(True)
         row_theme.addWidget(lbl_theme)
         row_theme.addWidget(self.combo_theme)
         row_theme.addWidget(self.lbl_theme_hint, 1)
         ctl.addLayout(row_theme)
+
+        row_lang = QHBoxLayout()
+        row_lang.setSpacing(10)
+        lbl_lang = QLabel(tr("Idioma"))
+        lbl_lang.setStyleSheet(f"color: {FG_PRIMARY}; font-size: 12px;")
+        self.combo_language = ghost_combo(self.LANGUAGE_OPTIONS, min_width=220, height=36)
+        self.combo_language.currentIndexChanged.connect(
+            lambda _i: self.request_set_language.emit(self.combo_language.currentData() or "auto")
+        )
+        self.lbl_lang_hint = QLabel(tr(
+            "«Automático» usa el idioma del sistema (inglés si no es español). "
+            "El cambio de idioma se aplica al reiniciar la aplicación."
+        ))
+        self.lbl_lang_hint.setStyleSheet(f"color: {FG_MUTED}; font-size: 11px;")
+        self.lbl_lang_hint.setWordWrap(True)
+        row_lang.addWidget(lbl_lang)
+        row_lang.addWidget(self.combo_language)
+        row_lang.addWidget(self.lbl_lang_hint, 1)
+        ctl.addLayout(row_lang)
         body.addWidget(card_theme)
 
         # ---------- Info técnica ----------
-        card_info = self._make_card("Información")
+        card_info = self._make_card(tr("Información"))
         cil = card_info.layout()
-        info = QLabel(
+        info = QLabel(tr(
             "• Datos cacheados en: ~/.dockerlabs-gui/ (catálogo, ajustes, logs).\n"
             "• El catálogo se actualiza automáticamente al arrancar si hay internet (F5 para forzar).\n"
             "• Si no hay conexión, se carga el último catálogo guardado (catalog.json).\n"
             "• Los labs se extraen en ~/.dockerlabs-gui/labs/<máquina>/ y los contenedores se llaman dockerlabs_<máquina>."
-        )
+        ))
         info.setStyleSheet(f"color: {FG_SECONDARY}; font-size: 12px;")
         info.setWordWrap(True)
         cil.addWidget(info)
@@ -1599,8 +1648,12 @@ class SettingsPage(QWidget):
     def set_state(self, downloads_dir: str, os_notifications: bool,
                   in_app_notifications: bool, os_backend_available: bool,
                   docker_network: str = "auto", max_concurrent: int = 2,
-                  theme: str = "dark") -> None:
+                  theme: str = "dark", language: str = "auto") -> None:
         self._current_dir = downloads_dir
+        self.combo_language.blockSignals(True)
+        l_idx = self.combo_language.findData(language or "auto")
+        self.combo_language.setCurrentIndex(max(0, l_idx))
+        self.combo_language.blockSignals(False)
         self.combo_theme.blockSignals(True)
         t_idx = self.combo_theme.findData(theme or "dark")
         self.combo_theme.setCurrentIndex(max(0, t_idx))
@@ -1626,21 +1679,19 @@ class SettingsPage(QWidget):
         self.chk_os.blockSignals(False)
 
         if os_backend_available:
-            self.lbl_backend.setText(
-                "Backend del sistema detectado correctamente."
-            )
+            self.lbl_backend.setText(tr("Backend del sistema detectado correctamente."))
             self.lbl_backend.setStyleSheet(f"color: {SUCCESS}; font-size: 11px;")
         else:
-            self.lbl_backend.setText(
+            self.lbl_backend.setText(tr(
                 "No se ha detectado un backend de notificaciones del SO."
                 " En Linux instala 'libnotify-bin' (notify-send), en Windows 'winotify',"
                 " o como fallback 'plyer'. Mientras tanto se usarán las notificaciones in-app."
-            )
+            ))
             self.lbl_backend.setStyleSheet(f"color: {WARNING}; font-size: 11px;")
 
     def _on_browse(self) -> None:
         path = QFileDialog.getExistingDirectory(
-            self, "Carpeta para las descargas", self._current_dir
+            self, tr("Carpeta para las descargas"), self._current_dir
         )
         if path:
             self.request_change_downloads_dir.emit(path)
@@ -1656,18 +1707,18 @@ class AboutPage(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
-        root.addWidget(page_header("Acerca de", "DockerLabs GUI"))
+        root.addWidget(page_header(tr("Acerca de"), "DockerLabs GUI"))
         body = QVBoxLayout()
         body.setContentsMargins(24, 18, 24, 24)
         body.setSpacing(10)
-        info = QLabel(
+        info = QLabel(tr(
             "DockerLabs GUI · cliente de escritorio no oficial para dockerlabs.es\n"
             "Stack: PyQt6, urllib (stdlib), requests.\n\n"
             "Construido sobre la API pública /api, los endpoints internos del\n"
             "frontend (toggle_completed_machine, completed_machines, author_profile)\n"
             "y descargas HTTP directas desde gestion-maquinas.dockerlabs.es\n"
             "con reintentos y verificación del zip."
-        )
+        ))
         info.setStyleSheet(f"color: {FG_SECONDARY};")
         info.setWordWrap(True)
         body.addWidget(info)

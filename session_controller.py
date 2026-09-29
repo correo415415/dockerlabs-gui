@@ -45,8 +45,14 @@ class LoginWorker(BaseWorker):
         res = self.client.login(self.user, self.pwd)
         if not res.success:
             self.failed.emit(res.message or "Login rechazado"); return
-        profile = self.client.author_profile(self.user)
-        self.success.emit(self.user, profile.get("profile_image_url", "") or "")
+        # El avatar es accesorio: si falla o tarda, el login no debe fallar ni esperar.
+        profile_url = ""
+        try:
+            profile = self.client.author_profile(self.user)
+            profile_url = profile.get("profile_image_url", "") or ""
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("author_profile tras login: %s", exc)
+        self.success.emit(self.user, profile_url)
 
     def format_error(self, exc: BaseException) -> str:
         if isinstance(exc, DockerLabsError):

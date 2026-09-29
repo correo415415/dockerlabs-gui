@@ -86,7 +86,7 @@ def test_info_permission_denied_precheck(monkeypatch, unix_socket):
     assert info.socket_path == str(unix_socket)
     assert info.service_state == "active"
     assert not any(c[1] == "version" for c in r.calls)
-    assert "Conceder acceso" in info.error
+    assert "Permitir acceso a Docker" in info.error
 
 
 def test_info_permission_denied_from_stderr(monkeypatch):
@@ -169,6 +169,31 @@ def test_grant_docker_access_no_elevation(monkeypatch):
     assert not ok and "usermod" in msg
 
 
+def test_grant_temp_docker_access_ok(monkeypatch):
+    monkeypatch.setattr(lm.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(lm, "elevation_command", lambda: ["/usr/bin/pkexec"])
+    r = Runner(0, "TEMP_OK\n")
+    ok, msg = lm.grant_temp_docker_access(sock="/var/run/docker.sock", user="alice", runner=r)
+    assert ok and "temporal" in msg.lower()
+    cmd = r.calls[0]
+    assert cmd[0] == "/usr/bin/pkexec" and cmd[1:3] == ["/bin/sh", "-c"]
+    # solo ACL sobre el socket: nunca toca grupos
+    assert "setfacl" in cmd[3] and "usermod" not in cmd[3] and "groupadd" not in cmd[3]
+    assert cmd[-2:] == ["alice", "/var/run/docker.sock"]
+
+
+def test_grant_temp_docker_access_errors(monkeypatch):
+    monkeypatch.setattr(lm.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(lm, "elevation_command", lambda: ["/usr/bin/pkexec"])
+    ok, msg = lm.grant_temp_docker_access(user="alice", runner=Runner(126, "", "Request dismissed"))
+    assert not ok and "cancelada" in msg.lower()
+    ok, msg = lm.grant_temp_docker_access(user="alice", runner=Runner(3, "", "No se encontró el socket"))
+    assert not ok and "socket" in msg
+    monkeypatch.setattr(lm, "elevation_command", lambda: [])
+    ok, msg = lm.grant_temp_docker_access(user="alice", runner=Runner(0, "TEMP_OK"))
+    assert not ok and "pkexec" in msg
+
+
 def test_start_docker_service(monkeypatch):
     monkeypatch.setattr(lm.platform, "system", lambda: "Linux")
     monkeypatch.setattr(lm, "is_root", lambda: False)
@@ -181,5 +206,69 @@ def test_start_docker_service(monkeypatch):
 
 def test_permission_hint():
     assert "root" in lm.permission_hint(DockerInfo(True, False, is_root=True))
-    assert "Conceder acceso" in lm.permission_hint(DockerInfo(True, False, can_elevate=True))
+    hint = lm.permission_hint(DockerInfo(True, False, can_elevate=True))
+    assert "grupo docker" in hint and "sistema" in hint
+    assert "contraseña de sudo" in lm.permission_hint(DockerInfo(True, False, can_sudo=True))
     assert "usermod" in lm.permission_hint(DockerInfo(True, False, can_elevate=False))
+    assert "memoria" in lm.permission_hint(DockerInfo(True, False, via_sudo=True))
+
+
+# ---------------- opción "usar sudo con contraseña" ----------------
+
+def test_verify_sudo_password_ok_and_bad(monkeypatch):
+    monkeypatch.setattr(lm.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(lm.shutil, "which", lambda n: "/usr/bin/sudo" if n == "sudo" else None)
+    r = Runner(0)
+    ok, _ = lm.verify_sudo_password("secret", runner=r)
+    assert ok
+    cmd = r.calls[0]
+    assert cmd[0] == "/usr/bin/sudo" and "-S" in cmd and "-k" in cmd and cmd[-1] == "-v"
+    bad = Runner(1, err="Sorry, try again.")
+    ok, msg = lm.verify_sudo_password("nope", runner=bad)
+    assert not ok and "incorrecta" in msg
+    nos = Runner(1, err="alice is not in the sudoers file.")
+    ok, msg = lm.verify_sudo_password("x", runner=nos)
+    assert not ok and "sudoers" in msg
+    assert lm.verify_sudo_password("", runner=r)[0] is False
+
+
+def test_verify_sudo_password_not_linux(monkeypatch):
+    monkeypatch.setattr(lm.platform, "system", lambda: "Windows")
+    assert lm.verify_sudo_password("x")[0] is False
+
+
+def test_client_runs_docker_with_sudo(monkeypatch):
+    monkeypatch.setattr(lm.shutil, "which", lambda n: "/usr/bin/sudo" if n == "sudo" else None)
+    r = Runner(0, "[]")
+    c = DockerClient(binary="/usr/bin/docker", runner=r)
+    assert not c.use_sudo
+    c._docker("ps", check=False)
+    assert r.calls[-1][0] == "/usr/bin/docker"
+    c.set_sudo_password("secret")
+    assert c.use_sudo
+    c._docker("ps", check=False)
+    assert r.calls[-1][:5] == ["/usr/bin/sudo", "-S", "-k", "-p", ""]
+    assert r.calls[-1][5:7] == ["/usr/bin/docker", "ps"]
+    sh = c.exec_shell_command("dockerlabs_x")
+    assert sh[0] == "/usr/bin/sudo" and "-S" not in sh and "exec" in sh
+    c.clear_sudo()
+    assert not c.use_sudo
+    c._docker("ps", check=False)
+    assert r.calls[-1][0] == "/usr/bin/docker"
+
+
+def test_info_with_sudo_skips_socket_precheck(monkeypatch, unix_socket):
+    monkeypatch.setattr(lm.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(lm, "docker_socket_path", lambda client=None: str(unix_socket))
+    monkeypatch.setattr(lm, "socket_access", lambda s: "denied")
+    monkeypatch.setattr(lm, "is_root", lambda: False)
+    monkeypatch.setattr(lm, "elevation_available", lambda: False)
+    monkeypatch.setattr(lm, "sudo_available", lambda: True)
+    monkeypatch.setattr(lm, "docker_service_state", lambda: "active")
+    r = Runner(0, '{"Server": {"Version": "27.0", "Os": "linux", "Arch": "amd64"}}')
+    c = DockerClient(binary="docker", runner=r)
+    c.set_sudo_password("pw")
+    info = c.info()
+    assert info.running and info.via_sudo and info.can_sudo
+    assert not info.needs_elevation
+    assert any("version" in call for call in r.calls)

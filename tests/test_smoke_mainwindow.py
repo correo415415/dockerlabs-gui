@@ -18,7 +18,21 @@ def _spin(ms):
 
 
 def test_mainwindow_boots(tmp_path, monkeypatch):
+    # Path.home() usa HOME en POSIX y USERPROFILE en Windows.
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    # Sin red: una petición real a /api con reintentos (4,5 s de sleeps + timeout 30 s)
+    # dejaría el CatalogWorker vivo al cerrar y Qt abortaría el proceso al salir
+    # (así falló la CI en Windows aunque todos los tests pasaran).
+    import dockerlabs_api
+
+    def _offline(self, *_a, **_k):
+        raise dockerlabs_api.DockerLabsError("sin red (test)")
+    monkeypatch.setattr(dockerlabs_api.DockerLabsClient, "_request", _offline)
+    import catalog
+    _orig_refresh = catalog.CatalogStore.refresh
+    monkeypatch.setattr(catalog.CatalogStore, "refresh",
+                        lambda self, fetch, **_k: _orig_refresh(self, fetch, retries=0, sleep=lambda _s: None))
     import importlib
 
     import main as m
@@ -35,6 +49,7 @@ def test_mainwindow_boots(tmp_path, monkeypatch):
     w.sidebar.profile_clicked.connect(lambda: got.append(1))
     w.sidebar.profile_clicked.emit()
     assert got
-    w.labs.shutdown(); w.downloads.shutdown()
-    w.close()
-    _spin(100)
+    w.close()          # closeEvent cierra labs, descargas, sesión, catálogo y workers
+    _spin(200)
+    assert not w.catalogs.refreshing
+    assert len(w._workers) == 0  # noqa: SLF001

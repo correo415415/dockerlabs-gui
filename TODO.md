@@ -184,6 +184,51 @@ Implementado en `lab_manager.py` (núcleo sin Qt, testeable), `lab_controller.py
 - [x] README actualizado (sin MEGA, con Docker, permisos Linux, requisitos por SO).
 - [x] CI GitHub Actions (`ci.yml`: ruff + pytest en ubuntu/windows/macos, sin caché) y `release.yml` (PyInstaller → assets del GitHub Release al crear un tag `v*`).
 
+## 6. Feedback tras probar en Windows/Linux (v0.6)  `[x]`
+
+Capturas del usuario tras mergear PR #1/#2.
+
+- [x] **Combos**: franjas negras arriba y abajo del desplegable → se estila el contenedor del popup
+      (`QComboBoxPrivateContainer`, paleta + QSS) en todos los combos (`ghost_combo`).
+- [x] **Checkboxes**: símbolo ✓ (SVG generado con el color del tema en el tmp del sistema) en
+      `indicator:checked`, con estados hover/disabled. Radios (`QRadioButton`) estilizados igual.
+- [x] **Tabla de máquinas**: columnas *Completada* y *Estado* con icono en la cabecera + tooltip
+      (`HEADER_ICONS`/`HEADER_TOOLTIPS` en `machine_model.py`).
+- [x] **Detalle de máquina**: colores de dificultad mal — `badge()` usaba `#RRGGBBAA`, que Qt lee como
+      `#AARRGGBB`. Ahora `rgba()`.
+- [x] **Marca**: «DockerLabs GUI» en el sidebar (sin «client · gui»).
+- [x] **Login lento a veces**: `DockerLabsClient` pasa de `urllib` a `requests.Session` (keep-alive:
+      el login encadena 3-4 peticiones y antes cada una hacía un handshake TLS nuevo), timeout de
+      conexión 8 s con 2 reintentos (antes 30 s sin reintento), y el avatar ya no bloquea el login.
+      Tests con servidor HTTP local en `tests/test_api_client.py`.
+- [x] **Exposición de red al lanzar**: `docker_network` se valida al cargar; por defecto y ante valores
+      raros → `auto`.
+- [x] **Permisos Docker (Linux)**: diálogo «Permitir acceso a Docker» (`widgets/docker_access_dialog.py`)
+      con **dos** opciones:
+      1. **Usar sudo con mi contraseña (recomendado)**: se valida con `sudo -v`; si es correcta,
+         `DockerClient` ejecuta todo como `sudo -S -k -p '' docker …` (la contraseña solo vive en
+         memoria; botón «Dejar de usar sudo» para olvidarla). `docker exec` en terminal deja que sudo
+         pregunte él mismo.
+      2. **Añadir mi usuario al grupo docker (permanente)**: lo que ya había (pkexec + `usermod` + ACL),
+         con aviso de que equivale a root sin contraseña.
+      `DockerInfo.can_sudo` / `via_sudo`; `LabController.use_sudo()` / `forget_sudo()`.
+
+## 7. Segunda ronda de feedback  `[x]`
+
+- [x] **Actualización dinámica**: al terminar una descarga la tabla de máquinas refleja el estado
+      sin recargar (también con el filtro «Descargadas» activo y ordenando por estado).
+- [x] **Caché de valoraciones e imágenes** en disco (`~/.dockerlabs-gui/cache/`): al cambiar de
+      máquina la valoración sale al instante (sin parpadeo) y las imágenes no se vuelven a bajar.
+- [x] ~~**IP del laboratorio cambia** (172.17.0.2 → .3 al relanzar)~~ — descartado: era otro
+      contenedor del usuario ocupando la `.2`; comportamiento normal del bridge de Docker.
+- [x] **Contraseña de sudo** con el mismo diálogo del sistema que la opción del grupo docker:
+      la opción recomendada («Solo esta sesión») usa pkexec y aplica una ACL sobre el socket sin
+      tocar grupos; el campo de contraseña en la app queda solo como fallback si no hay pkexec.
+- [x] **Logo de la app**: imagen de la máquina 138 sin fondo + «GUI» en la parte inferior
+      (`packaging/make_logo.py` → `assets/logo.png`, `packaging/icon.ico`); icono de ventana,
+      marca del sidebar y de los ejecutables (PyInstaller).
+- [x] **`Connection pool is full, discarding connection`**: pool de `requests` ampliado a 16.
+
 ## 5. Ideas futuras (no bloqueantes)  `[ ]`
 
 - [ ] Writeups: abrir lista y enviar writeup (`/api/submit_writeup`) desde la app.

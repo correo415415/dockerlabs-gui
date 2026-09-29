@@ -34,8 +34,10 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from i18n import tr
 from theme import ACCENT, FG_PRIMARY, FG_SECONDARY
 from widgets.avatar import AvatarCircle
+from widgets.icons import app_logo_pixmap
 from widgets.icons import icon as svg_icon
 
 
@@ -128,15 +130,21 @@ class Sidebar(QFrame):
         h.addWidget(self.hamburger)
 
         self.brand_wrap = QFrame()
-        brand_box = QVBoxLayout(self.brand_wrap)
+        brand_box = QHBoxLayout(self.brand_wrap)
         brand_box.setContentsMargins(0, 0, 0, 0)
-        brand_box.setSpacing(0)
-        self.brand = QLabel("DockerLabs")
+        brand_box.setSpacing(8)
+        self.brand_logo = QLabel()
+        self.brand_logo.setObjectName("brandLogo")
+        logo_pix = app_logo_pixmap(30)
+        if not logo_pix.isNull():
+            self.brand_logo.setPixmap(logo_pix)
+            self.brand_logo.setFixedSize(30, 30)
+            brand_box.addWidget(self.brand_logo, 0, Qt.AlignmentFlag.AlignVCenter)
+        else:
+            self.brand_logo.hide()
+        self.brand = QLabel("DockerLabs GUI")
         self.brand.setObjectName("brand")
-        self.brand_sub = QLabel("client · gui")
-        self.brand_sub.setObjectName("brandSub")
-        brand_box.addWidget(self.brand)
-        brand_box.addWidget(self.brand_sub)
+        brand_box.addWidget(self.brand, 1, Qt.AlignmentFlag.AlignVCenter)
         h.addWidget(self.brand_wrap, 1)
         self._brand_opacity = _wrap_with_opacity(self.brand_wrap)
         outer.addWidget(header)
@@ -148,13 +156,13 @@ class Sidebar(QFrame):
         nav_layout.setSpacing(4)
 
         nav_items: List[tuple[str, str, str]] = [
-            ("dashboard",  "dashboard", "Dashboard"),
-            ("machines",   "machines",  "Máquinas"),
-            ("downloads",  "download",  "Descargas"),
-            ("lab",        "docker",    "Laboratorio"),
-            ("completed",  "completed", "Completadas"),
-            ("settings",   "settings",  "Ajustes"),
-            ("about",      "info",      "Acerca de"),
+            ("dashboard",  "dashboard", tr("Dashboard")),
+            ("machines",   "machines",  tr("Máquinas")),
+            ("downloads",  "download",  tr("Descargas")),
+            ("lab",        "docker",    tr("Laboratorio")),
+            ("completed",  "completed", tr("Completadas")),
+            ("settings",   "settings",  tr("Ajustes")),
+            ("about",      "info",      tr("Acerca de")),
         ]
         for key, icon_name, text in nav_items:
             btn = NavButton(icon_name, text)
@@ -209,7 +217,7 @@ class Sidebar(QFrame):
         self.user_name = QLabel("Invitado")
         self.user_name.setObjectName("userName")
         self.user_name.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.user_status = QLabel("No autenticado")
+        self.user_status = QLabel(tr("No autenticado"))
         self.user_status.setObjectName("userStatus")
         self.user_status.setCursor(Qt.CursorShape.PointingHandCursor)
         text_layout.addWidget(self.user_name)
@@ -341,7 +349,7 @@ class Sidebar(QFrame):
 
     def set_logged_in(self, username: str) -> None:
         self.user_name.setText(username)
-        self.user_status.setText("Sesión activa")
+        self.user_status.setText(tr("Sesión activa"))
         self.session_btn.setText("Salir")
         try:
             self.session_btn.clicked.disconnect()
@@ -352,7 +360,7 @@ class Sidebar(QFrame):
 
     def set_logged_out(self) -> None:
         self.user_name.setText("Invitado")
-        self.user_status.setText("No autenticado")
+        self.user_status.setText(tr("No autenticado"))
         self.session_btn.setText("Login")
         try:
             self.session_btn.clicked.disconnect()

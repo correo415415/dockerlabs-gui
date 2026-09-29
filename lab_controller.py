@@ -28,11 +28,13 @@ from lab_manager import (
     describe_access_multi,
     extract_lab,
     grant_docker_access,
+    grant_temp_docker_access,
     inspect_image_tar,
     install_hint,
     permission_hint,
     slug_from_name,
     start_docker_service,
+    verify_sudo_password,
 )
 from workers import BaseWorker, WorkerPool
 
@@ -97,20 +99,32 @@ class _DockerInfoWorker(BaseWorker):
 
 
 class _ElevateWorker(BaseWorker):
-    """Pide privilegios (diálogo nativo) para conceder acceso o arrancar el servicio."""
+    """Pide privilegios para conceder acceso, arrancar el servicio o validar sudo.
+
+    Acciones: `grant` (pkexec + usermod/ACL, permanente), `temp` (pkexec + ACL
+    sobre el socket, hasta el próximo reinicio), `start_service` (systemctl) y
+    `sudo` (fallback sin pkexec: verifica la contraseña con `sudo -v`; si es
+    válida el controlador la guarda en memoria en el `DockerClient`).
+    """
     done = pyqtSignal(str, bool, str)   # action, ok, detail
 
-    def __init__(self, action: str, socket_path: str = "", parent=None) -> None:
+    def __init__(self, action: str, socket_path: str = "", password: str = "",
+                 parent=None) -> None:
         super().__init__(parent)
         self.action = action
         self.socket_path = socket_path
+        self._password = password
         self.failed.connect(lambda err: self.done.emit(self.action, False, err))
 
     def work(self) -> None:
         if self.action == "grant":
             ok, msg = grant_docker_access(sock=self.socket_path)
+        elif self.action == "temp":
+            ok, msg = grant_temp_docker_access(sock=self.socket_path)
         elif self.action == "start_service":
             ok, msg = start_docker_service()
+        elif self.action == "sudo":
+            ok, msg = verify_sudo_password(self._password)
         else:
             ok, msg = False, f"Acción desconocida: {self.action}"
         self.done.emit(self.action, ok, msg)
@@ -286,14 +300,37 @@ class LabController(QObject):
         al grupo docker (+ ACL inmediata sobre el socket). No bloquea la UI."""
         return self._elevate("grant")
 
+    def grant_temp_access(self) -> bool:
+        """Linux: pide la contraseña con el diálogo del sistema y da acceso al socket
+        solo hasta el próximo reinicio (ACL, sin tocar grupos). No bloquea la UI."""
+        return self._elevate("temp")
+
     def start_service(self) -> bool:
         """Linux: `systemctl start docker` con elevación gráfica."""
         return self._elevate("start_service")
 
-    def _elevate(self, action: str) -> bool:
+    def use_sudo(self, password: str) -> bool:
+        """Linux: valida la contraseña de sudo en segundo plano; si es correcta, a partir
+        de ahora `docker` se ejecuta con `sudo -S` (la contraseña solo vive en memoria)."""
+        return self._elevate("sudo", password=password)
+
+    def forget_sudo(self) -> None:
+        """Deja de usar sudo y olvida la contraseña."""
+        if self.client.use_sudo:
+            self.client.clear_sudo()
+            self.refresh_docker_info()
+
+    @property
+    def via_sudo(self) -> bool:
+        return self.client.use_sudo
+
+    def _elevate(self, action: str, password: str = "") -> bool:
         if self.elevating:
             return False
-        w = _ElevateWorker(action, self.docker_info.socket_path, parent=self)
+        w = _ElevateWorker(action, self.docker_info.socket_path, password=password, parent=self)
+        if action == "sudo":
+            # Guardamos la contraseña solo si sudo la acepta; el worker no la reemite.
+            w.done.connect(lambda a, ok, _d, pw=password: ok and self.client.set_sudo_password(pw))
         w.done.connect(self._on_elevation_done)
         self.elevation_started.emit(action)
         self._track(w)

@@ -5,8 +5,8 @@ from __future__ import annotations
 import logging
 from typing import Dict, List, Optional
 
-from PyQt6.QtCore import QObject, Qt, QUrl, pyqtSignal
-from PyQt6.QtGui import QDesktopServices, QImage, QPainter, QPainterPath, QPixmap
+from PyQt6.QtCore import QObject, Qt, QTimer, QUrl, pyqtSignal
+from PyQt6.QtGui import QColor, QDesktopServices, QImage, QPainter, QPainterPath, QPixmap
 from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -42,30 +42,44 @@ _IMG_W, _IMG_H = 300, 168
 
 
 class _ImageFetcher(BaseWorker):
+    """Imagen de máquina: primero caché en disco, si no, red (y se guarda)."""
     done = pyqtSignal(str, bytes)
     failed = pyqtSignal(str, str)   # url, error
 
-    def __init__(self, client, url: str, parent: Optional[QObject] = None) -> None:
+    def __init__(self, client, url: str, cache=None, parent: Optional[QObject] = None) -> None:
         super().__init__(parent)
-        self.client, self.url = client, url
+        self.client, self.url, self.cache = client, url, cache
 
     def work(self) -> None:
-        self.done.emit(self.url, self.client.fetch_bytes(self.url))
+        if self.cache is not None:
+            data = self.cache.get_image(self.url)
+            if data:
+                self.done.emit(self.url, data)
+                return
+        data = self.client.fetch_bytes(self.url)
+        if self.cache is not None:
+            self.cache.put_image(self.url, data)
+        self.done.emit(self.url, data)
 
     def on_error(self, exc: BaseException) -> None:
         self.failed.emit(self.url, self.format_error(exc))
 
 
 class _RatingFetcher(BaseWorker):
+    """Valoración: red → caché en disco. (La lectura de caché la hace el panel en el
+    hilo de UI porque es instantánea y así no hay parpadeo.)"""
     done = pyqtSignal(str, dict)
     failed = pyqtSignal(str, str)   # name, error
 
-    def __init__(self, client, name: str, parent: Optional[QObject] = None) -> None:
+    def __init__(self, client, name: str, cache=None, parent: Optional[QObject] = None) -> None:
         super().__init__(parent)
-        self.client, self.name = client, name
+        self.client, self.name, self.cache = client, name, cache
 
     def work(self) -> None:
-        self.done.emit(self.name, self.client.machine_rating(self.name))
+        data = self.client.machine_rating(self.name)
+        if self.cache is not None and isinstance(data, dict):
+            self.cache.put_rating(self.name, data)
+        self.done.emit(self.name, data)
 
     def on_error(self, exc: BaseException) -> None:
         self.failed.emit(self.name, self.format_error(exc))
@@ -84,10 +98,21 @@ def _rounded(pm: QPixmap, radius: int = 12) -> QPixmap:
     return out
 
 
+def _rgba(color: str, alpha: float) -> str:
+    """`#rrggbb` → `rgba(r, g, b, a)` para QSS.
+
+    Nota: Qt interpreta `#RRGGBBAA` como `#AARRGGBB`, así que concatenar el alfa
+    al final del hex cambia el color por completo (los badges salían de otro color).
+    """
+    c = QColor(color)
+    return f"rgba({c.red()}, {c.green()}, {c.blue()}, {alpha:.2f})"
+
+
 def badge(text: str, color: str) -> QLabel:
     lb = QLabel(text)
     lb.setStyleSheet(
-        f"QLabel {{ color: {color}; background: {color}26; border: 1px solid {color}66;"
+        f"QLabel {{ color: {color}; background: {_rgba(color, 0.15)};"
+        f" border: 1px solid {_rgba(color, 0.40)};"
         f" border-radius: 10px; padding: 2px 10px; font-weight: 700; font-size: 11px; }}"
     )
     return lb
@@ -117,13 +142,15 @@ class MachineDetailPanel(QFrame):
     request_toggle_completed = pyqtSignal(str)
     request_close = pyqtSignal()
 
-    def __init__(self, client=None, parent=None) -> None:
+    def __init__(self, client=None, parent=None, media_cache=None) -> None:
         super().__init__(parent)
         self.client = client
+        self.media_cache = media_cache          # MediaCache (disco) o None
         self.machine: Optional[Machine] = None
         self._writeups: List[Writeup] = []
-        self._img_cache: Dict[str, QPixmap] = {}
-        self._rating_cache: Dict[str, dict] = {}
+        self._img_cache: Dict[str, QPixmap] = {}      # memoria: pixmaps ya escalados
+        self._rating_cache: Dict[str, dict] = {}      # memoria: valoraciones de la sesión
+        self._rating_fresh: set[str] = set()          # ya refrescadas desde red esta sesión
         self._workers = WorkerPool()
         self._status = dict(done=False, downloading=False, downloaded=False, running=False)
 
@@ -252,30 +279,40 @@ class MachineDetailPanel(QFrame):
             self.lbl_author.setText(f"Autor: {m.author or '—'}")
         self.lbl_date.setText(f"Publicada: {m.date or '—'}")
 
-        self.img.setPixmap(QPixmap())
-        self.img.setText("Cargando imagen…")
         pm = self._img_cache.get(m.image_url)
         if pm is not None:
             self._set_image(pm)
         elif self.client is not None and m.image_url:
-            w = _ImageFetcher(self.client, m.image_url, parent=self)
+            # Con caché en disco el worker devuelve en ~1 ms: no mostramos "Cargando…"
+            # de inmediato (parpadeo) sino sólo si tras 150 ms sigue sin llegar.
+            self.img.setPixmap(QPixmap())
+            self.img.setText("")
+            QTimer.singleShot(150, lambda url=m.image_url: self._show_loading_text(url))
+            w = _ImageFetcher(self.client, m.image_url, cache=self.media_cache, parent=self)
             w.done.connect(self._on_image)
             w.failed.connect(self._on_image_failed)
             self._track(w)
         else:
+            self.img.setPixmap(QPixmap())
             self.img.setText("Sin imagen")
 
         r = self._rating_cache.get(m.name)
+        fresh = m.name in self._rating_fresh
+        if r is None and self.media_cache is not None:
+            r, fresh = self.media_cache.get_rating(m.name)
+            if r is not None:
+                self._rating_cache[m.name] = r
         if r is not None:
-            self._apply_rating(r)
+            self._apply_rating(r)          # instantáneo: sin parpadeo
         else:
             self.lbl_rating.setText("Valoración: …")
             self.lbl_rating_detail.setText("")
-            if self.client is not None:
-                w = _RatingFetcher(self.client, m.name, parent=self)
-                w.done.connect(self._on_rating)
-                w.failed.connect(self._on_rating_failed)
-                self._track(w)
+        if self.client is not None and (r is None or not fresh):
+            # Refresco en segundo plano (si estaba cacheada, se actualiza sin molestar)
+            w = _RatingFetcher(self.client, m.name, cache=self.media_cache, parent=self)
+            w.done.connect(self._on_rating)
+            w.failed.connect(self._on_rating_failed)
+            self._track(w)
 
         while self.wu_host.count():
             it = self.wu_host.takeAt(0)
@@ -359,6 +396,14 @@ class MachineDetailPanel(QFrame):
         if self.machine and self.machine.image_url == url:
             self._set_image(pm)
 
+    def _show_loading_text(self, url: str) -> None:
+        try:
+            pm = self.img.pixmap()
+        except RuntimeError:      # panel destruido
+            return
+        if self.machine and self.machine.image_url == url and (pm is None or pm.isNull()):
+            self.img.setText("Cargando imagen…")
+
     def _on_image_failed(self, url: str, err: str) -> None:
         logger.debug("imagen %s: %s", url, err)
         if self.machine and self.machine.image_url == url:
@@ -370,12 +415,14 @@ class MachineDetailPanel(QFrame):
 
     def _on_rating(self, name: str, data: dict) -> None:
         self._rating_cache[name] = data
+        self._rating_fresh.add(name)
         if self.machine and self.machine.name == name:
             self._apply_rating(data)
 
     def _on_rating_failed(self, name: str, err: str) -> None:
         logger.debug("rating %s: %s", name, err)
-        if self.machine and self.machine.name == name:
+        # Si ya mostramos una valoración cacheada, no la pisamos con el error.
+        if self.machine and self.machine.name == name and name not in self._rating_cache:
             self.lbl_rating.setText("Valoración no disponible")
 
     def _apply_rating(self, data: dict) -> None:
