@@ -34,6 +34,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from i18n import tr
 from theme import ACCENT, FG_PRIMARY, FG_SECONDARY
 from widgets.avatar import AvatarCircle
 from widgets.icons import app_logo_pixmap
@@ -155,13 +156,13 @@ class Sidebar(QFrame):
         nav_layout.setSpacing(4)
 
         nav_items: List[tuple[str, str, str]] = [
-            ("dashboard",  "dashboard", "Dashboard"),
-            ("machines",   "machines",  "Máquinas"),
-            ("downloads",  "download",  "Descargas"),
-            ("lab",        "docker",    "Laboratorio"),
-            ("completed",  "completed", "Completadas"),
-            ("settings",   "settings",  "Ajustes"),
-            ("about",      "info",      "Acerca de"),
+            ("dashboard",  "dashboard", tr("Dashboard")),
+            ("machines",   "machines",  tr("Máquinas")),
+            ("downloads",  "download",  tr("Descargas")),
+            ("lab",        "docker",    tr("Laboratorio")),
+            ("completed",  "completed", tr("Completadas")),
+            ("settings",   "settings",  tr("Ajustes")),
+            ("about",      "info",      tr("Acerca de")),
         ]
         for key, icon_name, text in nav_items:
             btn = NavButton(icon_name, text)
@@ -216,7 +217,7 @@ class Sidebar(QFrame):
         self.user_name = QLabel("Invitado")
         self.user_name.setObjectName("userName")
         self.user_name.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.user_status = QLabel("No autenticado")
+        self.user_status = QLabel(tr("No autenticado"))
         self.user_status.setObjectName("userStatus")
         self.user_status.setCursor(Qt.CursorShape.PointingHandCursor)
         text_layout.addWidget(self.user_name)
@@ -348,7 +349,7 @@ class Sidebar(QFrame):
 
     def set_logged_in(self, username: str) -> None:
         self.user_name.setText(username)
-        self.user_status.setText("Sesión activa")
+        self.user_status.setText(tr("Sesión activa"))
         self.session_btn.setText("Salir")
         try:
             self.session_btn.clicked.disconnect()
@@ -359,7 +360,7 @@ class Sidebar(QFrame):
 
     def set_logged_out(self) -> None:
         self.user_name.setText("Invitado")
-        self.user_status.setText("No autenticado")
+        self.user_status.setText(tr("No autenticado"))
         self.session_btn.setText("Login")
         try:
             self.session_btn.clicked.disconnect()
