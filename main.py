@@ -32,6 +32,7 @@ import theme as _theme
 from app_logging import install_excepthook, setup_logging
 from catalog_controller import CatalogController
 from download_manager import DownloadManager
+from i18n import set_language, tr  # noqa: F401 - tr se usa al envolver textos
 from lab_controller import LabController
 from media_cache import MediaCache
 from notifier import notify_os, os_backend_available
@@ -78,6 +79,14 @@ def _load_theme_pref() -> str:
         return SettingsStore(SETTINGS_FILE).load().theme or DEFAULT_THEME
     except Exception:  # noqa: BLE001
         return DEFAULT_THEME
+
+
+def _load_language_pref() -> str:
+    """Preferencia de idioma (`auto|es|en`) antes de construir cualquier widget."""
+    try:
+        return SettingsStore(SETTINGS_FILE).load().language or "auto"
+    except Exception:  # noqa: BLE001
+        return "auto"
 
 
 # -----------------------------------------------------------------------------
@@ -856,6 +865,7 @@ def main() -> int:
     app.setApplicationName("DockerLabs GUI")
     app.setDesktopFileName("dockerlabs-gui")
     app.setWindowIcon(app_icon())
+    set_language(_load_language_pref())
     app.setStyleSheet(apply_theme(_load_theme_pref()))
     win = MainWindow()
     install_excepthook(lambda: win)
