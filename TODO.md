@@ -213,18 +213,21 @@ Capturas del usuario tras mergear PR #1/#2.
          con aviso de que equivale a root sin contraseña.
       `DockerInfo.can_sudo` / `via_sudo`; `LabController.use_sudo()` / `forget_sudo()`.
 
-## 7. Segunda ronda de feedback  `[~]`
+## 7. Segunda ronda de feedback  `[x]`
 
-- [ ] **Actualización dinámica**: al terminar una descarga la tabla de máquinas refleja el estado
+- [x] **Actualización dinámica**: al terminar una descarga la tabla de máquinas refleja el estado
       sin recargar (también con el filtro «Descargadas» activo y ordenando por estado).
-- [ ] **Caché de valoraciones e imágenes** en disco (`~/.dockerlabs-gui/cache/`): al cambiar de
+- [x] **Caché de valoraciones e imágenes** en disco (`~/.dockerlabs-gui/cache/`): al cambiar de
       máquina la valoración sale al instante (sin parpadeo) y las imágenes no se vuelven a bajar.
-- [ ] **IP del laboratorio cambia** (172.17.0.2 → .3 al relanzar): red bridge dedicada por lab con
-      IP fija asignada por la app.
-- [ ] **Contraseña de sudo** con el mismo diálogo del sistema que la opción del grupo docker.
-- [ ] **Logo de la app**: imagen de la máquina 138 sin fondo + «GUI» en la parte inferior; icono de
-      ventana y de los ejecutables.
-- [ ] **`Connection pool is full, discarding connection`**: ampliar el pool de `requests`.
+- [x] ~~**IP del laboratorio cambia** (172.17.0.2 → .3 al relanzar)~~ — descartado: era otro
+      contenedor del usuario ocupando la `.2`; comportamiento normal del bridge de Docker.
+- [x] **Contraseña de sudo** con el mismo diálogo del sistema que la opción del grupo docker:
+      la opción recomendada («Solo esta sesión») usa pkexec y aplica una ACL sobre el socket sin
+      tocar grupos; el campo de contraseña en la app queda solo como fallback si no hay pkexec.
+- [x] **Logo de la app**: imagen de la máquina 138 sin fondo + «GUI» en la parte inferior
+      (`packaging/make_logo.py` → `assets/logo.png`, `packaging/icon.ico`); icono de ventana,
+      marca del sidebar y de los ejecutables (PyInstaller).
+- [x] **`Connection pool is full, discarding connection`**: pool de `requests` ampliado a 16.
 
 ## 5. Ideas futuras (no bloqueantes)  `[ ]`
 
