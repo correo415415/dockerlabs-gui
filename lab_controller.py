@@ -28,6 +28,7 @@ from lab_manager import (
     describe_access_multi,
     extract_lab,
     grant_docker_access,
+    grant_temp_docker_access,
     inspect_image_tar,
     install_hint,
     permission_hint,
@@ -100,9 +101,10 @@ class _DockerInfoWorker(BaseWorker):
 class _ElevateWorker(BaseWorker):
     """Pide privilegios para conceder acceso, arrancar el servicio o validar sudo.
 
-    Acciones: `grant` (pkexec + usermod/ACL), `start_service` (systemctl) y
-    `sudo` (verifica la contraseña con `sudo -v`; si es válida el controlador la
-    guarda en memoria en el `DockerClient`).
+    Acciones: `grant` (pkexec + usermod/ACL, permanente), `temp` (pkexec + ACL
+    sobre el socket, hasta el próximo reinicio), `start_service` (systemctl) y
+    `sudo` (fallback sin pkexec: verifica la contraseña con `sudo -v`; si es
+    válida el controlador la guarda en memoria en el `DockerClient`).
     """
     done = pyqtSignal(str, bool, str)   # action, ok, detail
 
@@ -117,6 +119,8 @@ class _ElevateWorker(BaseWorker):
     def work(self) -> None:
         if self.action == "grant":
             ok, msg = grant_docker_access(sock=self.socket_path)
+        elif self.action == "temp":
+            ok, msg = grant_temp_docker_access(sock=self.socket_path)
         elif self.action == "start_service":
             ok, msg = start_docker_service()
         elif self.action == "sudo":
@@ -295,6 +299,11 @@ class LabController(QObject):
         """Linux: pide la contraseña con el diálogo del sistema y añade el usuario
         al grupo docker (+ ACL inmediata sobre el socket). No bloquea la UI."""
         return self._elevate("grant")
+
+    def grant_temp_access(self) -> bool:
+        """Linux: pide la contraseña con el diálogo del sistema y da acceso al socket
+        solo hasta el próximo reinicio (ACL, sin tocar grupos). No bloquea la UI."""
+        return self._elevate("temp")
 
     def start_service(self) -> bool:
         """Linux: `systemctl start docker` con elevación gráfica."""

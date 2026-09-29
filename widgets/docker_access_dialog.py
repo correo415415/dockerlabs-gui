@@ -1,19 +1,23 @@
 """Diálogo «Permitir acceso a Docker» (Linux).
 
-Cuando el usuario no puede hablar con el socket de Docker se ofrecen dos vías:
+Cuando el usuario no puede hablar con el socket de Docker se ofrecen dos vías,
+ambas con el **diálogo de autenticación del sistema** (pkexec/polkit o
+`sudo -A` con askpass gráfico): la app nunca ve la contraseña.
 
-1. **Usar sudo (recomendado)** — se pide la contraseña una vez; se valida con
-   `sudo -v` y, si es correcta, la app ejecuta `docker` con `sudo -S`. La
-   contraseña solo vive en memoria mientras la app está abierta: no toca la
-   configuración del sistema ni requiere cerrar sesión.
-2. **Añadir mi usuario al grupo docker** — solución permanente: se abre el
-   diálogo de autenticación del sistema (pkexec/polkit) y se ejecuta
-   `usermod -aG docker` + ACL sobre el socket para que funcione sin re-login.
-   Equivale a dar acceso root sin contraseña a ese usuario (cualquiera con su
-   sesión puede usar Docker), por eso no es la opción recomendada.
+1. **Solo esta sesión (recomendado)** — se aplica una ACL sobre el socket de
+   Docker para el usuario actual. No se modifica ningún grupo ni la
+   configuración; el permiso desaparece cuando se reinicia el servicio o el
+   equipo. No hace falta cerrar sesión.
+2. **Añadir mi usuario al grupo docker** — solución permanente: `usermod -aG
+   docker` + ACL sobre el socket para que funcione sin re-login. Equivale a dar
+   acceso root sin contraseña a ese usuario, por eso no es la recomendada.
 
-El diálogo no ejecuta nada: devuelve la elección (`choice`) y, en el caso de
-sudo, la contraseña (`password`). El controlador hace el trabajo en un hilo.
+Si no hay pkexec ni askpass gráfico (`can_elevate=False`) pero sí `sudo`, se
+muestra un fallback: la contraseña se introduce en la app, se valida con
+`sudo -v` y `docker` se ejecuta con `sudo -S` (contraseña solo en memoria).
+
+El diálogo no ejecuta nada: devuelve la elección (`choice`) y, en el fallback
+de sudo, la contraseña (`password`). El controlador hace el trabajo en un hilo.
 """
 from __future__ import annotations
 
@@ -35,8 +39,9 @@ from PyQt6.QtWidgets import (
 from theme import BG_MID, BORDER_SOFT, FG_MUTED, FG_PRIMARY, WARNING
 from widgets.icons import icon as svg_icon
 
-CHOICE_SUDO = "sudo"
-CHOICE_GROUP = "group"
+CHOICE_TEMP = "temp"      # ACL sobre el socket (diálogo del sistema) — recomendado
+CHOICE_GROUP = "group"    # usermod -aG docker (diálogo del sistema) — permanente
+CHOICE_SUDO = "sudo"      # fallback: contraseña en la app, docker vía sudo -S
 
 
 class DockerAccessDialog(QDialog):
@@ -50,6 +55,10 @@ class DockerAccessDialog(QDialog):
         self.setMinimumWidth(520)
         self.choice: str = ""
         self.password: str = ""
+        self.can_elevate = can_elevate
+        self.can_sudo = can_sudo
+        # Fallback de contraseña en la app solo cuando no hay diálogo del sistema
+        self.sudo_fallback = bool(can_sudo and not can_elevate)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(22, 20, 22, 18)
@@ -62,7 +71,10 @@ class DockerAccessDialog(QDialog):
         title_box = QVBoxLayout()
         title = QLabel("Tu usuario no puede usar Docker")
         title.setStyleSheet(f"font-size: 15px; font-weight: 700; color: {FG_PRIMARY};")
-        sub = QLabel("Docker necesita permisos de administrador. Elige cómo quieres concederlos:")
+        sub = QLabel("Docker necesita permisos de administrador. Elige cómo quieres concederlos; "
+                     "la contraseña se pedirá con el diálogo de autenticación del sistema."
+                     if can_elevate else
+                     "Docker necesita permisos de administrador.")
         sub.setWordWrap(True)
         sub.setStyleSheet(f"color: {FG_MUTED};")
         title_box.addWidget(title)
@@ -76,15 +88,40 @@ class DockerAccessDialog(QDialog):
             err.setStyleSheet(f"color: {FG_MUTED}; font-size: 11px;")
             root.addWidget(err)
 
-        # ---- Opción 1: sudo ----
-        self.opt_sudo = QRadioButton("Usar sudo con mi contraseña  (recomendado)")
-        self.opt_sudo.setEnabled(can_sudo)
+        # ---- Opción 1: acceso temporal (diálogo del sistema) ----
+        self.opt_temp = QRadioButton("Solo esta sesión  (recomendado)")
+        self.opt_temp.setEnabled(can_elevate)
+        self.opt_temp.setStyleSheet("font-weight: 600;")
+        root.addWidget(self.opt_temp)
+        root.addWidget(self._card(
+            "Se te pedirá la contraseña con el diálogo del sistema y se dará permiso a tu usuario "
+            "sobre el socket de Docker. No se modifica ningún grupo ni la configuración: el permiso "
+            "desaparece al reiniciar el servicio o el equipo. No hace falta cerrar sesión."
+            + ("" if can_elevate else "\n\nNo hay pkexec/polkit ni askpass gráfico disponible.")
+        ))
+
+        # ---- Opción 2: grupo docker (diálogo del sistema) ----
+        self.opt_group = QRadioButton("Añadir mi usuario al grupo docker  (permanente)")
+        self.opt_group.setEnabled(can_elevate)
+        self.opt_group.setStyleSheet("font-weight: 600;")
+        root.addWidget(self.opt_group)
+        root.addWidget(self._card(
+            "Con el mismo diálogo del sistema se ejecutará `usermod -aG docker` más una ACL sobre "
+            "el socket para que funcione sin cerrar sesión.\n"
+            "Ten en cuenta que pertenecer al grupo docker equivale a tener root sin contraseña."
+            + ("" if can_elevate else "\n\nNo hay pkexec/polkit ni askpass gráfico disponible.")
+        ))
+
+        # ---- Fallback: sudo con contraseña en la app (solo sin pkexec) ----
+        self.opt_sudo = QRadioButton("Usar sudo con mi contraseña  (solo esta sesión)")
+        self.opt_sudo.setEnabled(self.sudo_fallback)
         self.opt_sudo.setStyleSheet("font-weight: 600;")
+        self.opt_sudo.setVisible(self.sudo_fallback)
         root.addWidget(self.opt_sudo)
         sudo_card = self._card(
-            "La contraseña se comprueba con sudo y se guarda solo en memoria mientras la app "
-            "está abierta. No se modifica nada en el sistema ni hace falta cerrar sesión."
-            + ("" if can_sudo else "\n\nNo se encontró `sudo` en este sistema.")
+            "No se encontró pkexec/polkit, así que no se puede usar el diálogo del sistema. "
+            "La contraseña se comprueba con `sudo -v` y se guarda solo en memoria mientras la app "
+            "está abierta; docker se ejecutará con sudo."
         )
         self.in_pwd = QLineEdit()
         self.in_pwd.setEchoMode(QLineEdit.EchoMode.Password)
@@ -92,21 +129,9 @@ class DockerAccessDialog(QDialog):
         self.in_pwd.setMinimumHeight(34)
         self.in_pwd.returnPressed.connect(self._accept)
         sudo_card.layout().addWidget(self.in_pwd)
+        sudo_card.setVisible(self.sudo_fallback)
         root.addWidget(sudo_card)
         self._sudo_card = sudo_card
-
-        # ---- Opción 2: grupo docker ----
-        self.opt_group = QRadioButton("Añadir mi usuario al grupo docker  (permanente)")
-        self.opt_group.setEnabled(can_elevate)
-        self.opt_group.setStyleSheet("font-weight: 600;")
-        root.addWidget(self.opt_group)
-        group_card = self._card(
-            "Se abrirá el diálogo de autenticación del sistema (pkexec) y se ejecutará "
-            "`usermod -aG docker` más una ACL sobre el socket para que funcione sin cerrar sesión.\n"
-            "Ten en cuenta que pertenecer al grupo docker equivale a tener root sin contraseña."
-            + ("" if can_elevate else "\n\nNo hay pkexec/polkit ni askpass gráfico disponible.")
-        )
-        root.addWidget(group_card)
 
         # ---- Botones ----
         btns = QHBoxLayout()
@@ -122,12 +147,12 @@ class DockerAccessDialog(QDialog):
         btns.addWidget(self.btn_ok)
         root.addLayout(btns)
 
-        self.opt_sudo.toggled.connect(self._sync)
-        self.opt_group.toggled.connect(self._sync)
-        if can_sudo:
+        for opt in (self.opt_temp, self.opt_group, self.opt_sudo):
+            opt.toggled.connect(self._sync)
+        if can_elevate:
+            self.opt_temp.setChecked(True)
+        elif self.sudo_fallback:
             self.opt_sudo.setChecked(True)
-        elif can_elevate:
-            self.opt_group.setChecked(True)
         self._sync()
 
     # ---- helpers ----
@@ -150,22 +175,25 @@ class DockerAccessDialog(QDialog):
 
     def _sync(self) -> None:
         sudo = self.opt_sudo.isChecked()
+        system = self.opt_temp.isChecked() or self.opt_group.isChecked()
         self.in_pwd.setEnabled(sudo)
-        self.btn_ok.setEnabled(sudo or self.opt_group.isChecked())
+        self.btn_ok.setEnabled(sudo or system)
         self.btn_ok.setText("Usar sudo" if sudo else "Abrir diálogo del sistema")
         if sudo:
             self.in_pwd.setFocus()
 
     def _accept(self) -> None:
-        if self.opt_sudo.isChecked():
+        if self.opt_temp.isChecked():
+            self.choice, self.password = CHOICE_TEMP, ""
+        elif self.opt_group.isChecked():
+            self.choice, self.password = CHOICE_GROUP, ""
+        elif self.opt_sudo.isChecked():
             pwd = self.in_pwd.text()
             if not pwd:
                 self.in_pwd.setPlaceholderText("Escribe tu contraseña para continuar")
                 self.in_pwd.setFocus()
                 return
             self.choice, self.password = CHOICE_SUDO, pwd
-        elif self.opt_group.isChecked():
-            self.choice, self.password = CHOICE_GROUP, ""
         else:
             return
         self.accept()

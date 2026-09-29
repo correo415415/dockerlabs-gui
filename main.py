@@ -605,7 +605,8 @@ class MainWindow(QMainWindow):
     # ---- Permisos de Docker (Linux: pkexec / sudo -A) ----
 
     def _grant_docker_access(self) -> None:
-        """Abre el diálogo con las dos opciones (sudo recomendado / grupo docker)."""
+        """Abre el diálogo con las opciones (solo esta sesión / grupo docker; ambas con el
+        diálogo de autenticación del sistema; fallback sudo con contraseña si no hay pkexec)."""
         info = self.labs.docker_info
         if not info.needs_elevation:
             self.notify("No hace falta", "Tu usuario ya puede usar Docker.", kind="info")
@@ -618,15 +619,22 @@ class MainWindow(QMainWindow):
                         "Ejecuta como administrador: usermod -aG docker $USER (y reinicia sesión)",
                         kind="error")
             return
-        from widgets.docker_access_dialog import CHOICE_GROUP, CHOICE_SUDO, ask_docker_access
+        from widgets.docker_access_dialog import (
+            CHOICE_GROUP,
+            CHOICE_SUDO,
+            CHOICE_TEMP,
+            ask_docker_access,
+        )
         choice, password = ask_docker_access(self, can_sudo=info.can_sudo,
                                              can_elevate=info.can_elevate, error=info.error)
-        if choice == CHOICE_SUDO:
-            if not self.labs.use_sudo(password):
-                self.notify("Ya hay una autorización en curso", kind="info")
-        elif choice == CHOICE_GROUP:
-            if not self.labs.grant_access():
-                self.notify("Ya hay una autorización en curso", kind="info")
+        actions = {
+            CHOICE_TEMP: lambda: self.labs.grant_temp_access(),
+            CHOICE_GROUP: lambda: self.labs.grant_access(),
+            CHOICE_SUDO: lambda: self.labs.use_sudo(password),
+        }
+        act = actions.get(choice)
+        if act is not None and not act():
+            self.notify("Ya hay una autorización en curso", kind="info")
 
     def _forget_sudo(self) -> None:
         self.labs.forget_sudo()
@@ -641,8 +649,8 @@ class MainWindow(QMainWindow):
 
     def _on_elevation_done(self, action: str, ok: bool, detail: str) -> None:
         self.page_lab.set_elevating(False)
-        titles = {"grant": "Acceso a Docker", "start_service": "Servicio Docker",
-                  "sudo": "Docker con sudo"}
+        titles = {"grant": "Acceso a Docker", "temp": "Acceso a Docker (esta sesión)",
+                  "start_service": "Servicio Docker", "sudo": "Docker con sudo"}
         title = titles.get(action, action)
         if ok:
             self.notify(title, detail.splitlines()[0] if detail else "Hecho", kind="success")

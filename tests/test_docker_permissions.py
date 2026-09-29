@@ -169,6 +169,31 @@ def test_grant_docker_access_no_elevation(monkeypatch):
     assert not ok and "usermod" in msg
 
 
+def test_grant_temp_docker_access_ok(monkeypatch):
+    monkeypatch.setattr(lm.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(lm, "elevation_command", lambda: ["/usr/bin/pkexec"])
+    r = Runner(0, "TEMP_OK\n")
+    ok, msg = lm.grant_temp_docker_access(sock="/var/run/docker.sock", user="alice", runner=r)
+    assert ok and "temporal" in msg.lower()
+    cmd = r.calls[0]
+    assert cmd[0] == "/usr/bin/pkexec" and cmd[1:3] == ["/bin/sh", "-c"]
+    # solo ACL sobre el socket: nunca toca grupos
+    assert "setfacl" in cmd[3] and "usermod" not in cmd[3] and "groupadd" not in cmd[3]
+    assert cmd[-2:] == ["alice", "/var/run/docker.sock"]
+
+
+def test_grant_temp_docker_access_errors(monkeypatch):
+    monkeypatch.setattr(lm.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(lm, "elevation_command", lambda: ["/usr/bin/pkexec"])
+    ok, msg = lm.grant_temp_docker_access(user="alice", runner=Runner(126, "", "Request dismissed"))
+    assert not ok and "cancelada" in msg.lower()
+    ok, msg = lm.grant_temp_docker_access(user="alice", runner=Runner(3, "", "No se encontró el socket"))
+    assert not ok and "socket" in msg
+    monkeypatch.setattr(lm, "elevation_command", lambda: [])
+    ok, msg = lm.grant_temp_docker_access(user="alice", runner=Runner(0, "TEMP_OK"))
+    assert not ok and "pkexec" in msg
+
+
 def test_start_docker_service(monkeypatch):
     monkeypatch.setattr(lm.platform, "system", lambda: "Linux")
     monkeypatch.setattr(lm, "is_root", lambda: False)
@@ -181,8 +206,9 @@ def test_start_docker_service(monkeypatch):
 
 def test_permission_hint():
     assert "root" in lm.permission_hint(DockerInfo(True, False, is_root=True))
-    assert "grupo docker" in lm.permission_hint(DockerInfo(True, False, can_elevate=True))
-    assert "sudo" in lm.permission_hint(DockerInfo(True, False, can_sudo=True))
+    hint = lm.permission_hint(DockerInfo(True, False, can_elevate=True))
+    assert "grupo docker" in hint and "sistema" in hint
+    assert "contraseña de sudo" in lm.permission_hint(DockerInfo(True, False, can_sudo=True))
     assert "usermod" in lm.permission_hint(DockerInfo(True, False, can_elevate=False))
     assert "memoria" in lm.permission_hint(DockerInfo(True, False, via_sudo=True))
 

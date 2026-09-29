@@ -238,8 +238,9 @@ class LabPage(QWidget):
         btns.setSpacing(6)
         self.btn_grant = _btn("Permitir acceso a Docker", "shield", ON_ACCENT, "primary")
         self.btn_grant.setToolTip(
-            "Elige entre usar sudo con tu contraseña (recomendado, solo en memoria) o "
-            "añadir tu usuario al grupo docker (permanente, diálogo del sistema).")
+            "Se pide la contraseña con el diálogo del sistema. Elige entre acceso solo "
+            "hasta el próximo reinicio (recomendado) o añadir tu usuario al grupo docker "
+            "(permanente).")
         self.btn_grant.clicked.connect(self.request_grant_access.emit)
         self.btn_forget_sudo = _btn("Dejar de usar sudo", "lock", FG_PRIMARY)
         self.btn_forget_sudo.setToolTip("Olvida la contraseña y vuelve a ejecutar docker con tu usuario.")
